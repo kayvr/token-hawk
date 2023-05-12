@@ -9,7 +9,7 @@ TokenHawk uses WebGPU to perform Llama inference. All code is written by hand an
 * th.cpp - Contains GPU shaders to support running LLMs.
 * th-llama.cpp - GPU implementation of llama.
 
-The command line version of TokenHawk is all native C++ code. It statically links to Google's C++ WebGPU library which makes profiling and debuging simple.
+The command line version of TokenHawk is native C++ code. It statically links to Google's C++ WebGPU library which makes profiling and debuging simpler.
 
 The Web UI version uses emcripten to cross-compile these two files into WASM.
 
@@ -37,21 +37,30 @@ python web/serve.py
 
 # Performance
 
-While fast, TokenHawk underperforms CUDA. There is a a lot of room for optimization.
-
-Next areas of focus:
+TokenHawk is pretty fast. On a 4090 using 7B-f16, TokenHawk clocks in at 30 tk/s while CUDA is 50 tk/s. And there is still room for improvement. We'll focus on the following perf improvements in the coming weeks:
 
 * Profile and optimize matrix multiplication.
 * Optimize single token generation.
-* Investigate feasibility of GPU-only operation. Not hitting the CPU.
-* Investigate native f16 support (currently emulated in shaders).
+    * Add a two-stage parallel reduction step.
+* Optimize WARP and Wavefront sizes for Nvidia and AMD.
+* Per-GPU hyper-parameter optimization.
+* Investigate feasibility of GPU-only operation. No hitting the CPU.
+* Investigate native f16 support. f16 is currently emulated in shaders.
+* Store intermediate GPU buffers in fp16. Specifically the context and working buffers.
 * Add 4-bit quantization.
-
-Using an RTX 4090, TokenHawk executes 10 tokens per second using a 7B parameter f16 model. The original CUDA implementation of llama yields 50 tokens per second. We should be able to get close to CUDA performance.
 
 ## Data
 
 More data to come.
+
+# See Also
+
+## Compilers
+
+While TokenHawk focuses on hand-tuning models, here are compiler projects that aim to automatically generate GPU code for models.
+
+* [Triton](https://github.com/openai/triton). OpenAI's triton compiler.
+* [mlc-llm](https://github.com/mlc-ai/mlc-llm). LLMs running using hardware acceleration.
 
 # Acknowledgments
 
