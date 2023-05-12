@@ -29,4 +29,11 @@ $ autoninja -C out/Release
 
 ## Building TokenHawk
 
-Compared to dawn, TokenHawk is relatively straight forward:
+When in the `<token-hawk-directory>/cli` directory:
+
+```
+$ mkdir build
+$ cd build
+$ cmake -DCMAKE_BUILD_TYPE=Release ..
+$ make -j8
+```

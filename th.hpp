@@ -295,6 +295,10 @@ bool are_pipelines_similar(const ComputePipeline& a, const ComputePipeline& b);
 bool are_mat_mul_pipelines_the_same(const ComputePipeline& a, float scaleA, bool transposeA,
                                     const ComputePipeline& b, float scaleB, bool transposeB);
 
+double get_time_seconds();
+
+void print_descriptive_stats(std::vector<double> data, const std::string& dataType);
+
 ComputePipeline create_compute_pipeline(
         WGPUDevice device,
         WGPUQueue queue,

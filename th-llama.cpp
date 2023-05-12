@@ -7,6 +7,8 @@
 namespace th {
 
 static const int64_t kBatchTokenSize = 8;
+static const int64_t kAllowedSubsequentBatchSize = 1;
+static const bool kShowTiming = true;
 
 llama_token th_eval_gpu(WGPUDevice device,
         WGPUQueue queue,
@@ -126,6 +128,7 @@ std::shared_ptr<LlamaModel> load_llama(WGPUDevice device, WGPUQueue queue, const
     printf("Constructing compute pipelines.\n");
 
     //ScopedTimeMs scopedTime("Model upload and pipeline construction");
+    //
 
     assert((TensorShape{.l=0, .b=0, .r=m->n_vocab, .c=m->n_embd} == get_TensorShape_from_ggml(ctx->model.tok_embeddings)));
     m->tok_embeddings = std::move(TensorBuffer(ctx->model.tok_embeddings, /*disable-gpu*/nullptr));
@@ -196,8 +199,8 @@ void reset_working_memory_tensors(LlamaModel& m) {
     m.ffWorking[1].reset_shape();
 }
 
-void do_inference(WGPUDevice device, WGPUQueue queue, std::shared_ptr<LlamaModel> m) {
-    std::string prompt = "You're an expert in understanding";
+void do_inference(WGPUDevice device, WGPUQueue queue, std::shared_ptr<LlamaModel> m, const th::ThLlamaParameters& thParams) {
+    std::string prompt = thParams.prompt;
     prompt.insert(0, 1, ' ');
 
     auto embd_inp = ::llama_tokenize(m->llamacpp_context, prompt.c_str(), true);
@@ -225,15 +228,17 @@ void do_inference(WGPUDevice device, WGPUQueue queue, std::shared_ptr<LlamaModel
 
     std::vector<llama_token> embd;
 
-    // some user input remains from prompt or interaction, forward it to processing
-    while ((int) embd_inp.size() > n_consumed) {
+    // We only allow a certain number of tokens to be batch processed at the beginning.
+    // This is due to a bug in our masked softmax implementation.
+    int64_t allowedInitTokens = 1;
+    if (embd_inp.size() >= kBatchTokenSize) {
+        allowedInitTokens = kBatchTokenSize;
+    }
+    while ((int) embd_inp.size() > n_consumed && embd.size() < allowedInitTokens) {
         embd.push_back(embd_inp[n_consumed]);
         last_n_tokens.erase(last_n_tokens.begin());
         last_n_tokens.push_back(embd_inp[n_consumed]);
         ++n_consumed;
-        if ((int) embd.size() >= params.n_batch) {
-            break;
-        }
     }
 
     if (!input_noecho) {
@@ -243,17 +248,29 @@ void do_inference(WGPUDevice device, WGPUQueue queue, std::shared_ptr<LlamaModel
         fflush(stdout);
     }
 
-    llama_token token = th_eval_gpu(device, queue, m, embd.data(), embd.size(), n_past);
-    
-    n_past += embd.size();
-    embd.clear();
-    embd.push_back(token);
+    llama_token token{};
 
-    for (int i = 0; i < 248; i++) {
+    for (int i = 0; i < 500; i++) {
         token = th_eval_gpu(device, queue, m, embd.data(), embd.size(), n_past);
         n_past += embd.size();
         embd.clear();
-        embd.push_back(token);
+
+        while ((int) embd_inp.size() > n_consumed && embd.size() < kAllowedSubsequentBatchSize) {
+            embd.push_back(embd_inp[n_consumed]);
+            last_n_tokens.erase(last_n_tokens.begin());
+            last_n_tokens.push_back(embd_inp[n_consumed]);
+            ++n_consumed;
+        }
+
+        if (embd.size() == 0) {
+            embd.push_back(token);
+        }
+
+        for (auto id : embd) {
+            printf("%s", llama_token_to_str(m->llamacpp_context, id));
+        }
+        fflush(stdout);
+
     }
 }
 
@@ -325,9 +342,15 @@ void build_layer_cmdbuf(
     cmdbuf_row_element_multiply(device, queue, encoder, nullptr, &p.p02, m->inp[0], l.attention_norm);
 
     if (encoder) { pass = wgpuCommandEncoderBeginComputePass(encoder, nullptr); };
-    cmdbuf_mat_mul(             device, queue, encoder, pass, &p.p03_mm, m->inp[0], l.wq, queryBuf, 1);
-    cmdbuf_mat_mul(             device, queue, encoder, pass, &p.p03_mm, m->inp[0], l.wk, keyBuf, 1);
-    cmdbuf_mat_mul(             device, queue, encoder, pass, &p.p03_mm, m->inp[0], l.wv, valueBuf, 1);
+    if (n_tokens == 1) {
+        cmdbuf_vector_mat_mul_trans( device, queue, encoder, pass, &p.p03_mm, m->inp[0], l.wq, queryBuf, 0);
+        cmdbuf_vector_mat_mul_trans( device, queue, encoder, pass, &p.p03_mm, m->inp[0], l.wk, keyBuf, 0);
+        cmdbuf_vector_mat_mul_trans( device, queue, encoder, pass, &p.p03_mm, m->inp[0], l.wv, valueBuf, 0);
+    } else {
+        cmdbuf_mat_mul(             device, queue, encoder, pass, &p.p03_mm, m->inp[0], l.wq, queryBuf, 1);
+        cmdbuf_mat_mul(             device, queue, encoder, pass, &p.p03_mm, m->inp[0], l.wk, keyBuf, 1);
+        cmdbuf_mat_mul(             device, queue, encoder, pass, &p.p03_mm, m->inp[0], l.wv, valueBuf, 1);
+    }
     if (encoder) {
         wgpuComputePassEncoderEnd(pass);
         wgpuComputePassEncoderRelease(pass); // There is a question whether we should release before building command buffer.
@@ -380,6 +403,7 @@ void build_layer_cmdbuf(
     std::swap(m->working_key_cache.shape.r, m->working_key_cache.shape.c);
     m->inp[5].shape = {.b=n_head, .r=n_tokens, .c=n_tokens + n_past};
     
+    // Potential optimization: add uniform usage to vector mat_mul.
     cmdbuf_mat_mul(device, queue, encoder, nullptr, &p.p06_mm, queryTranspose, m->working_key_cache, m->inp[5], /*transpose*/1, m->dimsUniforms[2]);
 
     if (n_tokens == kBatchTokenSize) {
@@ -394,6 +418,7 @@ void build_layer_cmdbuf(
 
     keyBuf.shape = {.b=n_head, .r=n_tokens, .c=n_embd/n_head};
 
+    // Potential optimization. Small buffer that can be easily broadcast.
     cmdbuf_mat_mul(device, queue, encoder, nullptr, &p.p08_mm, m->inp[5], m->working_val_cache, keyBuf, 0, m->dimsUniforms[4]);
 
     //--------------------------------------------------------------------------------
@@ -415,7 +440,11 @@ void build_layer_cmdbuf(
 
     valueBuf.shape = TensorShape{.l=0, .b=0, .r=n_tokens, .c=m->n_embd};
     m->inp[1].shape = TensorShape{.l=0, .b=0, .r=n_tokens, .c=m->n_embd};
-    cmdbuf_mat_mul(device, queue, encoder, nullptr, &p.p10_mm, valueBuf, l.wo, m->inp[1], 1);
+    if (n_tokens == 1) {
+        cmdbuf_vector_mat_mul_trans(device, queue, encoder, nullptr, &p.p10_mm, valueBuf, l.wo, m->inp[1], 0);
+    } else {
+        cmdbuf_mat_mul(device, queue, encoder, nullptr, &p.p10_mm, valueBuf, l.wo, m->inp[1], 1);
+    }
 
     m->inp[6].shape = m->inp[1].shape;
     m->inp[2].shape = m->inp[1].shape;
@@ -430,12 +459,17 @@ void build_layer_cmdbuf(
 
     m->ffWorking[0].shape.r = n_tokens;
     m->ffWorking[1].shape.r = n_tokens;
-    std::swap(l.w1.shape.r, l.w1.shape.c);
-    std::swap(l.w3.shape.r, l.w3.shape.c);
 
     if (encoder) { pass = wgpuCommandEncoderBeginComputePass(encoder, nullptr); }
-    cmdbuf_mat_mul(device, queue, encoder, pass, &p.p14_mm, m->inp[2], l.w1, m->ffWorking[0], 1);
-    cmdbuf_mat_mul(device, queue, encoder, pass, &p.p14_mm, m->inp[2], l.w3, m->ffWorking[1], 1);
+    if (n_tokens == 1) {
+        cmdbuf_vector_mat_mul_trans(device, queue, encoder, pass, &p.p14_mm, m->inp[2], l.w1, m->ffWorking[0], 0);
+        cmdbuf_vector_mat_mul_trans(device, queue, encoder, pass, &p.p14_mm, m->inp[2], l.w3, m->ffWorking[1], 0);
+    } else {
+        std::swap(l.w1.shape.r, l.w1.shape.c);
+        std::swap(l.w3.shape.r, l.w3.shape.c);
+        cmdbuf_mat_mul(device, queue, encoder, pass, &p.p14_mm, m->inp[2], l.w1, m->ffWorking[0], 1);
+        cmdbuf_mat_mul(device, queue, encoder, pass, &p.p14_mm, m->inp[2], l.w3, m->ffWorking[1], 1);
+    }
     if (encoder) {
         wgpuComputePassEncoderEnd(pass);
         wgpuComputePassEncoderRelease(pass); // There is a question whether we should release before building command buffer.
@@ -445,8 +479,12 @@ void build_layer_cmdbuf(
 
     cmdbuf_element_mult_in_place(device, queue, encoder, nullptr, &p.p16_hadamard, /*out*/m->ffWorking[0], m->ffWorking[1]);
 
-    std::swap(l.w2.shape.r, l.w2.shape.c);
-    cmdbuf_mat_mul(device, queue, encoder, nullptr, &p.p17_mm, m->ffWorking[0], l.w2, m->inp[2], 1);
+    if (n_tokens == 1) {
+        cmdbuf_vector_mat_mul_trans(device, queue, encoder, nullptr, &p.p17_mm, m->ffWorking[0], l.w2, m->inp[2], 0);
+    } else {
+        std::swap(l.w2.shape.r, l.w2.shape.c);
+        cmdbuf_mat_mul(device, queue, encoder, nullptr, &p.p17_mm, m->ffWorking[0], l.w2, m->inp[2], 1);
+    }
 
     cmdbuf_addition(device, queue, encoder, nullptr, &p.p18_add, m->inp[3], m->inp[2], m->inp[0]);
 
@@ -585,6 +623,9 @@ llama_token th_eval_gpu(
     ggml_free(ctx0);
     
     int64_t size = n_embd * N * sizeof(float);
+
+    static std::vector<double> hackTimingData{};
+    double tokenBeginTime = get_time_seconds(); // Note: we should be using queries on the GPU to get better timings.
     
     wgpuQueueWriteBuffer(queue, m->inp[0].gpu, 0, ggml_get_data(inpL), size);
     wgpuQueueWriteBuffer(queue, m->inp[6].gpu, 0, ggml_get_data(inpL), size);
@@ -607,8 +648,8 @@ llama_token th_eval_gpu(
             } else if (n_tokens == 1) {
                 pipeline = &m->ps;
             } else {
+                printf("th_eval_gpu: n_tokens must be 1 or %ld. Got: %d\n", kBatchTokenSize, n_tokens);
                 assert(false);
-                printf("th_eval_gpu: n_tokens must be 1 or %ld\n", kBatchTokenSize);
                 return 0;
             }
 
@@ -693,6 +734,16 @@ llama_token th_eval_gpu(
         usleep(1);
     }
 
+    if (kShowTiming) {
+        double tokenEndTime = get_time_seconds(); // Note: we should be using queries on the GPU to get better timings.
+        hackTimingData.push_back((tokenEndTime - tokenBeginTime) * 1000.0);
+
+        if (hackTimingData.size() >= 50) {
+            print_descriptive_stats(hackTimingData, " (ms)");
+            hackTimingData.clear();
+        }
+    }
+
     //if (temperature > 0.0) {
     //    // Softmax and perform top_p
     //}
@@ -704,12 +755,6 @@ llama_token th_eval_gpu(
 
     // Apparently llama_vocab::id and llama_token are the same thing.
     llama_vocab::id token = llama_sample_top_p_top_k(m, {}, top_k, top_p, temp, repeat_penalty, logits);
-
-    // display text
-    printf("%s", llama_token_to_str(lctx, token));
-    fflush(stdout);
-    //printf("\n");
-    //
 
     return token;
 }

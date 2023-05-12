@@ -7,6 +7,7 @@
 #include "math.h"
 
 #include <vector>
+#include <chrono>
 
 namespace th {
 
@@ -24,6 +25,73 @@ std::string get_TensorType_name(TensorType dt) {
         default: assert(false);
     }
     return "TensorType_Unknown";
+}
+
+double get_time_seconds() {
+  auto t0 = std::chrono::high_resolution_clock::now();        
+  auto nanosec = t0.time_since_epoch();
+
+  return (nanosec.count() / 1000000000.0);
+}
+
+static double percentile(const std::vector<double>& sortedValues, double percent) {
+    if(sortedValues.empty()) return 0;
+    
+    if (percent <= 0) return sortedValues[0];
+    else if (percent >= 1) return sortedValues.back();
+    
+    double index = (sortedValues.size() - 1) * percent;
+    size_t lower = std::floor(index);
+    size_t upper = std::ceil(index);
+    double weight = index - lower;
+    
+    if(upper >= sortedValues.size()) return sortedValues[lower];
+    return (1 - weight) * sortedValues[lower] + weight * sortedValues[upper];
+}
+
+void print_descriptive_stats(std::vector<double> runTimes, const std::string& dataType) {
+    // Calculate mean
+    double sum = std::accumulate(runTimes.begin(), runTimes.end(), 0.0);
+    double mean = sum / runTimes.size();
+
+    // Sort the runtimes for median and percentile calculations
+    std::sort(runTimes.begin(), runTimes.end());
+
+    // Calculate median
+    size_t size = runTimes.size();
+    double median = (size % 2 == 0) ? 
+                    (runTimes[size / 2 - 1] + runTimes[size / 2]) / 2.0 : 
+                    runTimes[size / 2];
+
+    // Calculate mode
+    double mode = *std::max_element(runTimes.begin(), runTimes.end(), 
+                    [&runTimes](double a, double b){
+                        return std::count(runTimes.begin(), runTimes.end(), a) < 
+                               std::count(runTimes.begin(), runTimes.end(), b);
+                    });
+
+    // Calculate standard deviation
+    double sq_sum = std::inner_product(runTimes.begin(), runTimes.end(), runTimes.begin(), 0.0);
+    double std_dev = std::sqrt(sq_sum / runTimes.size() - mean * mean);
+
+    // Output results
+    printf("\n");
+    printf("Mean: %8.2f%s\n", mean, dataType.c_str());
+    printf("Median: %8.2f%s\n", median, dataType.c_str());
+    printf("Mode: %8.2f%s\n", mode, dataType.c_str());
+    printf("StdDev: %8.2f%s\n", std_dev, dataType.c_str());
+
+    // Calculate percentiles
+    double percentile99 = percentile(runTimes, 0.99);
+    double percentile95 = percentile(runTimes, 0.95);
+    double percentile80 = percentile(runTimes, 0.80);
+    double percentile5 = percentile(runTimes, 0.05);
+    double percentile1 = percentile(runTimes, 0.01);
+    
+    printf("99th Percentile: %8.2f%s\n", percentile99, dataType.c_str());
+    printf("95th Percentile: %8.2f%s\n", percentile95, dataType.c_str());
+    printf("5th Percentile: %8.2f%s\n", percentile5, dataType.c_str());
+    printf("1st Percentile: %8.2f%s\n", percentile1, dataType.c_str());
 }
 
 static void store_pipeline_validation(

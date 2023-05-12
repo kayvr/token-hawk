@@ -299,17 +299,17 @@ static bool llama_model_load(
             model.type = e_model::MODEL_65B;
         }
 
-        fprintf(stderr, "%s: n_vocab = %d\n", __func__, hparams.n_vocab);
-        fprintf(stderr, "%s: n_ctx   = %d\n", __func__, hparams.n_ctx);
-        fprintf(stderr, "%s: n_embd  = %d\n", __func__, hparams.n_embd);
-        fprintf(stderr, "%s: n_mult  = %d\n", __func__, hparams.n_mult);
-        fprintf(stderr, "%s: n_head  = %d\n", __func__, hparams.n_head);
-        fprintf(stderr, "%s: n_layer = %d\n", __func__, hparams.n_layer);
-        fprintf(stderr, "%s: n_rot   = %d\n", __func__, hparams.n_rot);
-        fprintf(stderr, "%s: f16     = %d\n", __func__, hparams.f16);
-        fprintf(stderr, "%s: n_ff    = %d\n", __func__, n_ff);
-        fprintf(stderr, "%s: n_parts = %d\n", __func__, n_parts);
-        fprintf(stderr, "%s: type    = %d\n", __func__, model.type);
+        //fprintf(stderr, "%s: n_vocab = %d\n", __func__, hparams.n_vocab);
+        //fprintf(stderr, "%s: n_ctx   = %d\n", __func__, hparams.n_ctx);
+        //fprintf(stderr, "%s: n_embd  = %d\n", __func__, hparams.n_embd);
+        //fprintf(stderr, "%s: n_mult  = %d\n", __func__, hparams.n_mult);
+        //fprintf(stderr, "%s: n_head  = %d\n", __func__, hparams.n_head);
+        //fprintf(stderr, "%s: n_layer = %d\n", __func__, hparams.n_layer);
+        //fprintf(stderr, "%s: n_rot   = %d\n", __func__, hparams.n_rot);
+        //fprintf(stderr, "%s: f16     = %d\n", __func__, hparams.f16);
+        //fprintf(stderr, "%s: n_ff    = %d\n", __func__, n_ff);
+        //fprintf(stderr, "%s: n_parts = %d\n", __func__, n_parts);
+        //fprintf(stderr, "%s: type    = %d\n", __func__, model.type);
     }
 
     // load vocab

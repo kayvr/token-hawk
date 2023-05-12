@@ -17,6 +17,31 @@ namespace th {
 struct LlamaModel;
 std::shared_ptr<LlamaModel> load_llama(WGPUDevice device, WGPUQueue queue, const std::string& filename, int32_t n_batch_tokens);
 
+struct ThLlamaParameters {
+    std::string modelFile = "models/7B/ggml-model-f16.bin";
+    std::string prompt = "";
+};
+
+struct LlamaLayer {
+    int64_t index{};
+
+    TensorBuffer attention_norm{};
+
+    TensorBuffer wq{};
+    TensorBuffer wk{};
+    TensorBuffer wv{};
+    TensorBuffer wo{};
+
+    TensorBuffer ffn_norm{};
+
+    TensorBuffer w1{};
+    TensorBuffer w2{};
+    TensorBuffer w3{};
+
+    TensorBuffer key_cache{};
+    TensorBuffer value_cache{};
+};
+
 struct LlamaLayerComputePipeline {
     ComputePipeline p01{true}; // RMS
     ComputePipeline p02{true}; // Row norm
@@ -42,26 +67,6 @@ struct LlamaFinalComputePipeline {
     ComputePipeline p01{true};
     ComputePipeline p02{true};
     ComputePipeline p03{true};
-};
-
-struct LlamaLayer {
-    int64_t index{};
-
-    TensorBuffer attention_norm{};
-
-    TensorBuffer wq{};
-    TensorBuffer wk{};
-    TensorBuffer wv{};
-    TensorBuffer wo{};
-
-    TensorBuffer ffn_norm{};
-
-    TensorBuffer w1{};
-    TensorBuffer w2{};
-    TensorBuffer w3{};
-
-    TensorBuffer key_cache{};
-    TensorBuffer value_cache{};
 };
 
 struct LlamaModel {
@@ -140,6 +145,6 @@ static_assert(sizeof(LlamaTensorDimsUniforms) <= kLlamaUniformsSize, "Uniforms t
 void reset_layer_tensors(LlamaLayer& layer);
 void reset_working_memory_tensors(LlamaModel& m);
 
-void do_inference(WGPUDevice device, WGPUQueue queue, std::shared_ptr<LlamaModel> m);
+void do_inference(WGPUDevice device, WGPUQueue queue, std::shared_ptr<LlamaModel> m, const th::ThLlamaParameters& thParams);
 
 } // namespace th
