@@ -1,6 +1,6 @@
 # TokenHawk
 
-[LLaMA](https://arxiv.org/abs/2302.13971) inference using WebGPU.
+[LLaMA](https://arxiv.org/abs/2302.13971) inference using hand-written WebGPU code.
 
 # Description
 
@@ -17,35 +17,29 @@ In addition to Dawn, [llama.cpp](https://github.com/ggerganov/llama.cpp) is used
 
 ## Command Line
 
+Use the command line for performance tuning WebGPU code. It builds the native C++ Dawn library directly into the generated binary making it easier to debug and profile.
+
 ```
 $ ./th -m models/llama-7B/ggml-model-f16.bin "<prompt goes here>"
 ```
 
 ## Web UI
 
-To run locally, use:
+For simple and quick access, use the Web UI. You can try it out online here, or host it locally:
 
 ```
-python serve.py
+python web/serve.py
 ```
-
-A precompiled WASM library is provided. So if you have a WebGPU compatible browser this should work out-of-the-box.
-
-Or, go to this github page and try it out.
 
 # Building
 
 ## Command Line
 
-```
-```
+See the [CLI directory](web/README.md).
 
 ## Web UI
 
-The Web UI requires emscripten to cross compile.
-
-```
-```
+See the [Web directory](web/README.md).
 
 # Performance
 
