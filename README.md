@@ -4,26 +4,30 @@
 
 # Description
 
-TokenHawk uses WebGPU to perform Llama inference. Contained in this repo is a native (C++) implementation that relies on Google's Dawn library for CLI access. Examples for cross-compiling to the web are also provided.
-
-There are two files:
+TokenHawk uses WebGPU to perform Llama inference. All code is written by hand and there are two files:
 
 * th.cpp - Contains GPU shaders to support running LLMs.
 * th-llama.cpp - GPU implementation of llama.
 
-In addition to Dawn, [llama.cpp](https://github.com/ggerganov/llama.cpp) is used to load models in ggml format and perform tokenization.
+The command line version of TokenHawk is all native C++ code. It statically links to Google's C++ WebGPU library which makes profiling and debuging simple.
 
-# Usage
+The Web UI version uses emcripten to cross-compile these two files into WASM.
 
-## Command Line
+[llama.cpp](https://github.com/ggerganov/llama.cpp) is currently used to load models and perform tokenization.
 
-Use the command line for performance tuning WebGPU code. It builds the native C++ Dawn library directly into the generated binary making it easier to debug and profile.
+# Command Line
+
+See the [CLI directory](cli/README.md) for build and usage instructions.
+
+Use the command line for performance tuning WebGPU code. Here's an example of usage:
 
 ```
 $ ./th -m models/llama-7B/ggml-model-f16.bin "<prompt goes here>"
 ```
 
-## Web UI
+# Web UI
+
+See the [Web directory](web/README.md) for build and usage instructions.
 
 For simple and quick access, use the Web UI. You can try it out online here, or host it locally:
 
@@ -31,23 +35,26 @@ For simple and quick access, use the Web UI. You can try it out online here, or 
 python web/serve.py
 ```
 
-# Building
-
-## Command Line
-
-See the [CLI directory](web/README.md).
-
-## Web UI
-
-See the [Web directory](web/README.md).
-
 # Performance
 
-There's still a ton of room for optimization.
+While fast, TokenHawk underperforms CUDA. There is a a lot of room for optimization.
+
+Next areas of focus:
 
 * Profile and optimize matrix multiplication.
 * Optimize single token generation.
-* Investigate feasibility of GPU-only operation without hitting the CPU.
+* Investigate feasibility of GPU-only operation. Not hitting the CPU.
+* Investigate native f16 support (currently emulated in shaders).
+* Add 4-bit quantization.
 
-An RTX 4090 executes 10 tokens per second using a 7B parameter f16 model. The original CUDA implementation of llama yields 50 tokens per second. While we may not be able to reach CUDA-levels of performance, we should be able to get close.
+Using an RTX 4090, TokenHawk executes 10 tokens per second using a 7B parameter f16 model. The original CUDA implementation of llama yields 50 tokens per second. We should be able to get close to CUDA performance.
 
+## Data
+
+More data to come.
+
+# Acknowledgments
+
+Thanks to [llama.cpp](https://github.com/ggerganov/llama.cpp) for GGML, tokenization, and its file format.
+
+And Google's [Dawn](https://dawn.googlesource.com/dawn) for the WebGPU implementation.
