@@ -1,0 +1,3 @@
+[submodule "cli/dawn"]
+	path = cli/dawn
+	url = https://dawn.googlesource.com/dawn

@@ -15,6 +15,8 @@ The Web UI version uses emcripten to cross-compile these two files into WASM.
 
 [llama.cpp](https://github.com/ggerganov/llama.cpp) is currently used to load models and perform tokenization.
 
+As of, May 13, 2023, only 7B llama models are supported. Wider model support should evolve quickly.
+
 # Command Line
 
 See the [CLI directory](cli/README.md) for build and usage instructions.
