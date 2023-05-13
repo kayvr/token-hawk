@@ -83,6 +83,7 @@ struct TensorShape {
     void canonicalize() {
         if (this->l == 1)    { this->l = 0; }
         if (this->b == 1)    { this->b = 0; }
+        if (this->r == 0)    { this->r = 1; }
     }
 };
 
@@ -102,6 +103,7 @@ struct TensorBuffer {
     TensorBuffer() = default;
     TensorBuffer(TensorShape shape, TensorType type, WGPUDevice device = nullptr, WGPUBufferUsageFlags usage = k_default_usage);
     TensorBuffer(ggml_tensor* tensor, WGPUDevice device = nullptr, WGPUQueue queue = nullptr, WGPUBufferUsageFlags usage = k_default_usage);
+    TensorBuffer(const void* data, TensorShape shape, TensorType type, bool backup, WGPUDevice device = nullptr, WGPUQueue queue = nullptr, WGPUBufferUsageFlags usage = k_default_usage);
     ~TensorBuffer() {
         free_buffers();
     }
@@ -117,10 +119,11 @@ struct TensorBuffer {
     size_t get_size_bytes() const;
     void allocate_gpu_memory(WGPUDevice device, WGPUBufferUsageFlags usage);
     void upload_ggml_to_gpu(WGPUQueue queue, ggml_tensor* tensor);
+    void upload_data_to_gpu(WGPUQueue queue, const void* data);
 
     void reset_shape();
 
-    int64_t get_num_dims() {
+    int64_t get_num_dims() const {
         int64_t num_dimensions = 0;
         if (this->shape.l != 0) { num_dimensions++; }
         if (this->shape.b != 0) { num_dimensions++; }
@@ -138,12 +141,16 @@ struct TensorBuffer {
         this->ram = nullptr;
     }
 
-    size_t get_size() {
+    size_t get_size() const {
         // Assert for types that have been tested.
         assert(this->type == TensorType_F32);
         assert(this->type == TensorType_F16);
         size_t type_size = get_TensorType_size(this->type);
         return this->shape.get_total_num_elements() * type_size;
+    }
+
+    bool is_valid() const {
+        return (gpu != nullptr) || (cpuBackup.size() > 0);
     }
 
     // Before adding or removing any values here, make sure you properly
@@ -154,9 +161,12 @@ struct TensorBuffer {
     //int64_t               disk{}; // Unused.
     bool                  cpuOnly = false;
     ggml_tensor*          ram{};
+    std::vector<uint8_t>  cpuBackup{};
     WGPUBuffer            gpu{};
 
-    TensorShape         originalShape{};
+    TensorShape           originalShape{};
+    
+    std::string           name{};
 };
 
 struct ComputePipeline {
@@ -199,10 +209,10 @@ struct ComputePipeline {
         , bindGroup(other.bindGroup)
         , buildPipelineFlag(other.buildPipelineFlag)
         , sa(other.sa)
-        , sb(other.sb)
-        , sc(other.sc)
         , ta(other.ta)
+        , sb(other.sb)
         , tb(other.tb)
+        , sc(other.sc)
         , tc(other.tc)
     {
         other.bindGroupLayout = nullptr;
@@ -280,7 +290,7 @@ struct CommandBuffer {
         }
     }
     
-    bool is_valid() {
+    bool is_valid() const {
         return (this->cmdBuffer != nullptr);
     }
 
@@ -301,14 +311,12 @@ void print_descriptive_stats(std::vector<double> data, const std::string& dataTy
 
 ComputePipeline create_compute_pipeline(
         WGPUDevice device,
-        WGPUQueue queue,
         const char* wgslSource,
         std::vector<WGPUBindGroupLayoutEntry> layoutEntries,
         const char* label);
 
 CommandBuffer cmdbuf_mat_mul(
         WGPUDevice device,
-        WGPUQueue queue,
         WGPUCommandEncoder encoder,     // Optional
         WGPUComputePassEncoder pass,    // Optional
         ComputePipeline* pipeline,      // Optional
@@ -320,10 +328,9 @@ CommandBuffer cmdbuf_mat_mul(
 
 CommandBuffer cmdbuf_transpose(
         WGPUDevice device,
-        WGPUQueue queue,
-        WGPUCommandEncoder encoder,     // Optional (use nullptr)
-        WGPUComputePassEncoder pass,    // Optional (use nullptr - takes precedence over encoder)
-        ComputePipeline* pipeline,
+        WGPUCommandEncoder encoder,     // Optional
+        WGPUComputePassEncoder pass,    // Optional
+        ComputePipeline* pipeline,      // Optional
         const TensorBuffer& inputF32,
         const TensorBuffer& outputF32,
         bool zy,
@@ -331,7 +338,6 @@ CommandBuffer cmdbuf_transpose(
 
 CommandBuffer cmdbuf_rms_norm(
         WGPUDevice device,
-        WGPUQueue queue,
         WGPUCommandEncoder encoder,     // Optional
         WGPUComputePassEncoder pass,    // Optional
         ComputePipeline* pipeline,      // Optional
@@ -339,7 +345,6 @@ CommandBuffer cmdbuf_rms_norm(
 
 CommandBuffer cmdbuf_row_element_multiply(
         WGPUDevice device,
-        WGPUQueue queue,
         WGPUCommandEncoder encoder,     // Optional
         WGPUComputePassEncoder pass,    // Optional
         ComputePipeline* pipeline,      // Optional
@@ -348,56 +353,50 @@ CommandBuffer cmdbuf_row_element_multiply(
 
 CommandBuffer cmdbuf_RoPE(
         WGPUDevice device,
-        WGPUQueue queue,
         WGPUCommandEncoder encoder,     // Optional
         WGPUComputePassEncoder pass,    // Optional
-        ComputePipeline* pipeline,
+        ComputePipeline* pipeline,      // Optional
         const TensorBuffer& A,
         WGPUBuffer networkUniforms);    // Buffer should include n_past as the first u32 element
 
 CommandBuffer cmdbuf_masked_softmax(
         WGPUDevice device,
-        WGPUQueue queue,
-        WGPUCommandEncoder encoder,     // Optional (use nullptr)
-        WGPUComputePassEncoder pass,    // Optional (use nullptr - takes precedence over encoder)
-        ComputePipeline* pipeline,
+        WGPUCommandEncoder encoder,     // Optional
+        WGPUComputePassEncoder pass,    // Optional
+        ComputePipeline* pipeline,      // Optional
         const TensorBuffer& inputOutputBuffer,
         WGPUBuffer dimBuffer);
 
 CommandBuffer cmdbuf_row_softmax(
         WGPUDevice device,
-        WGPUQueue queue,
-        WGPUCommandEncoder encoder,     // Optional (use nullptr)
-        WGPUComputePassEncoder pass,    // Optional (use nullptr - takes precedence over encoder)
-        ComputePipeline* pipeline,
+        WGPUCommandEncoder encoder,     // Optional
+        WGPUComputePassEncoder pass,    // Optional
+        ComputePipeline* pipeline,      // Optional
         const TensorBuffer& inputOutputBuffer,
         WGPUBuffer dimBuffer);
 
 CommandBuffer cmdbuf_addition(
         WGPUDevice device,
-        WGPUQueue queue,
-        WGPUCommandEncoder encoder,     // Optional (use nullptr)
-        WGPUComputePassEncoder pass,    // Optional (use nullptr - takes precedence over encoder)
-        ComputePipeline* pipeline,
+        WGPUCommandEncoder encoder,     // Optional
+        WGPUComputePassEncoder pass,    // Optional
+        ComputePipeline* pipeline,      // Optional
         const TensorBuffer& a,
         const TensorBuffer& b,
         const TensorBuffer& c);
 
 CommandBuffer create_element_mult(
         WGPUDevice device,
-        WGPUQueue queue,
-        WGPUCommandEncoder encoder,     // Optional (use nullptr)
-        WGPUComputePassEncoder pass,    // Optional (use nullptr - takes precedence over encoder)
+        WGPUCommandEncoder encoder,     // Optional
+        WGPUComputePassEncoder pass,    // Optional
         const TensorBuffer& a, // out
         const TensorBuffer& b,
         const TensorBuffer& c);
 
 CommandBuffer cmdbuf_element_mult_in_place(
         WGPUDevice device,
-        WGPUQueue queue,
-        WGPUCommandEncoder encoder,     // Optional (use nullptr)
-        WGPUComputePassEncoder pass,    // Optional (use nullptr - takes precedence over encoder)
-        ComputePipeline* pipeline,
+        WGPUCommandEncoder encoder,     // Optional
+        WGPUComputePassEncoder pass,    // Optional
+        ComputePipeline* pipeline,      // Optional
         const TensorBuffer& a, // out
         const TensorBuffer& b);
 
@@ -405,15 +404,13 @@ CommandBuffer cmdbuf_element_mult_in_place(
 
 CommandBuffer cmdbuf_silu(
         WGPUDevice device,
-        WGPUQueue queue,
         WGPUCommandEncoder encoder,     // Optional
         WGPUComputePassEncoder pass,    // Optional
-        ComputePipeline* pipeline,
+        ComputePipeline* pipeline,      // Optional
         const TensorBuffer& a);
 
 CommandBuffer cmdbuf_vector_mat_mul_trans(
         WGPUDevice device,
-        WGPUQueue queue,
         WGPUCommandEncoder encoder,     // Optional
         WGPUComputePassEncoder pass,    // Optional
         ComputePipeline* pipeline,      // Optional
@@ -421,5 +418,53 @@ CommandBuffer cmdbuf_vector_mat_mul_trans(
         const TensorBuffer& B,
         const TensorBuffer& C,
         int64_t aOffset);
+
+CommandBuffer cmdbuf_vector_mat_mul_split_trans(
+        WGPUDevice device,
+        WGPUCommandEncoder encoder,     // Optional
+        WGPUComputePassEncoder pass,    // Optional
+        ComputePipeline* pipeline,      // Optional
+        const TensorBuffer& A,
+        const TensorBuffer& B,
+        const TensorBuffer& C,
+        const std::vector<TensorBuffer*>& scratchBuffers,
+        // int32_t numSplits, // By default the number of splits is two.
+        int64_t aOffset,
+        const std::vector<WGPUBuffer>& splitBuffers,
+        bool useDimsFromUniforms);
+
+CommandBuffer cmdbuf_vector_multi_mat_mul_split_trans(
+        WGPUDevice device,
+        WGPUCommandEncoder encoder,     // Optional (use nullptr)
+        WGPUComputePassEncoder pass,    // Optional (use nullptr)
+        ComputePipeline* pipeline,
+        const TensorBuffer& A,
+        const std::vector<TensorBuffer*> B,
+        const TensorBuffer& C,
+        const std::vector<TensorBuffer*>& scratchBuffers,
+        int64_t aOffset,
+        const std::vector<WGPUBuffer>& splitBuffers,
+        bool useDimsFromUniforms);
+
+CommandBuffer cmdbuf_vector_reduce(
+        WGPUDevice device,
+        WGPUCommandEncoder encoder,     // Optional
+        WGPUComputePassEncoder pass,    // Optional
+        ComputePipeline* pipeline,
+        const TensorBuffer& A, // OUT
+        const TensorBuffer& B,
+        int numSplits);
+
+// Only converts one row in B.
+CommandBuffer cmdbuf_f16_f32_conversion(
+        WGPUDevice device,
+        WGPUCommandEncoder encoder,     // Optional (use nullptr)
+        WGPUComputePassEncoder pass,    // Optional (use nullptr)
+        ComputePipeline* pipeline,
+        const TensorBuffer& A, // OUT
+        const TensorBuffer& B,
+        int numSplits,
+        const int aOffset,
+        const int bOffset);
 
 } // namespace th

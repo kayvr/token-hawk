@@ -17,6 +17,8 @@ The Web UI version uses emcripten to cross-compile these two files into WASM.
 
 As of, May 13, 2023, only 7B llama models are supported. Wider model support should evolve quickly.
 
+TokenHawk output is entirely reproducible from run-to-run.
+
 # Command Line
 
 See the [CLI directory](cli/README.md) for build and usage instructions.
@@ -50,6 +52,7 @@ TokenHawk is pretty fast. On a 4090 using 7B-f16, TokenHawk clocks in at 30 tk/s
 * Investigate native f16 support. f16 is currently emulated in shaders.
 * Store intermediate GPU buffers in fp16. Specifically the context and working buffers.
 * Add 4-bit quantization.
+* Optimize transpose. Can we ensure better memory coalescing?
 
 ## Data
 

@@ -4,9 +4,12 @@
 #include <iostream>
 #include <memory>
 #include <string.h>
+#include <filesystem>
 
 #include "th.hpp"
 #include "th-llama.hpp"
+#include "th-llama-loader.hpp"
+
 
 static void printDeviceError(WGPUErrorType errorType, const char *message, void *);
 static void printDeviceLost(WGPUDeviceLostReason reason, char const *message, void *);
@@ -17,6 +20,7 @@ static void print_usage();
 static bool run_inference(WGPUDevice device, WGPUQueue queue, const th::ThLlamaParameters& params);
 
 int main(int argc, char* argv[]) {
+    std::string loadDirectory;
     th::ThLlamaParameters params{};
     for (int i = 1; i < argc; i++)
     {
@@ -31,6 +35,14 @@ int main(int argc, char* argv[]) {
             }
 
             params.modelFile = argv[++i];
+            continue;
+        } else if (!strcmp(arg, "-d") || !strcmp(arg, "--dir")) {
+            if (i == argc - 1) {
+                fprintf(stderr, "'-d' requires a directory.\n");
+                return EXIT_FAILURE;
+            }
+
+            params.directory = argv[++i];
             continue;
         }
 
@@ -115,7 +127,12 @@ int main(int argc, char* argv[]) {
 }
 
 static bool run_inference(WGPUDevice device, WGPUQueue queue, const th::ThLlamaParameters& params) {
-    std::shared_ptr<th::LlamaModel> model = th::load_llama(device, queue, params.modelFile, 8);
+    std::shared_ptr<th::LlamaModel> model;
+    if (!params.directory.empty()) {
+        model = th::load_llama_chunked(device, queue, params.directory);
+    } else {
+        model = th::load_llama_file(device, queue, params.modelFile);
+    }
     th::do_inference(device, queue, model, params);
     model.reset();
 }
@@ -179,12 +196,13 @@ static void print_usage()
          "\n"
          "FLAGS:\n"
          "    -m, --model         Model to load (default: models/7B/ggml-model-f16.bin).\n"
+         "    -d, --dir           Load web-chunked model data from this directory.\n"
          "    -h, --help          Print this help.\n"
          "\n"
          "ARGS:\n"
          "    [prompt]...     The prompt to pass to the LLM.\n"
          "\n"
          "EXAMPLES:\n"
-         "    th -m models/llama-7B/ggml-model-f16.bin \"Hello, how are you?\""
+         "    th -m models/llama-7B/ggml-model-f16.bin \"Hello, how are you?\"\n"
          );
 }

@@ -84,7 +84,6 @@ void print_descriptive_stats(std::vector<double> runTimes, const std::string& da
     // Calculate percentiles
     double percentile99 = percentile(runTimes, 0.99);
     double percentile95 = percentile(runTimes, 0.95);
-    double percentile80 = percentile(runTimes, 0.80);
     double percentile5 = percentile(runTimes, 0.05);
     double percentile1 = percentile(runTimes, 0.01);
     
@@ -183,6 +182,21 @@ TensorBuffer::TensorBuffer(ggml_tensor* tensor, WGPUDevice device, WGPUQueue que
     if (queue)  { upload_ggml_to_gpu(queue, tensor); }
 }
 
+TensorBuffer::TensorBuffer(const void* data, TensorShape shapeIn, TensorType type, bool backup, WGPUDevice device, WGPUQueue queue, WGPUBufferUsageFlags usage) {
+    this->shape = shapeIn;
+    this->type = type;
+    this->ram = nullptr;
+    if (backup) {
+        size_t size = this->get_size_bytes();
+        this->cpuBackup.resize(size);
+        memcpy(this->cpuBackup.data(), data, size);
+    }
+    this->originalShape = shape;
+  
+    if (device) { allocate_gpu_memory(device, usage); }
+    if (queue)  { upload_data_to_gpu(queue, data); }
+}
+
 TensorBuffer& TensorBuffer::operator=(TensorBuffer&& other) noexcept {
     if (this != &other) {
         free_buffers();
@@ -193,8 +207,11 @@ TensorBuffer& TensorBuffer::operator=(TensorBuffer&& other) noexcept {
         this->ram = other.ram;
         this->gpu = other.gpu;
         this->originalShape = other.originalShape;
+        this->cpuBackup = other.cpuBackup;
+        this->name = other.name;
         other.gpu = nullptr;
         other.ram = nullptr;
+        other.cpuBackup.clear();
     }
     return *this;
 }
@@ -206,9 +223,12 @@ TensorBuffer::TensorBuffer(TensorBuffer&& other) noexcept
     , ram(other.ram)
     , gpu(other.gpu)
     , originalShape(other.originalShape)
+    , cpuBackup(other.cpuBackup)
+    , name(other.name)
 {
     other.gpu = nullptr;
     other.ram = nullptr;
+    other.cpuBackup.clear();
 }
 
 size_t TensorBuffer::get_size_bytes() const {
@@ -216,6 +236,11 @@ size_t TensorBuffer::get_size_bytes() const {
     int64_t elementSize = get_TensorType_size(this->type);
     int64_t size = shape.get_total_num_elements();
     return size * elementSize;
+}
+
+void TensorBuffer::upload_data_to_gpu(WGPUQueue queue, const void* data) {
+    assert(this->gpu);
+    wgpuQueueWriteBuffer(queue, this->gpu, 0, data, this->get_size_bytes());
 }
 
 void TensorBuffer::upload_ggml_to_gpu(WGPUQueue queue, ggml_tensor* tensor) {
@@ -251,7 +276,6 @@ void TensorBuffer::reset_shape() {
 
 ComputePipeline create_compute_pipeline(
         WGPUDevice device,
-        WGPUQueue queue,
         const char* wgslSource,
         std::vector<WGPUBindGroupLayoutEntry> layoutEntries,
         const char* label)
@@ -320,8 +344,8 @@ void print_TensorBuffer(TensorBuffer* buffer, const char* bufferName) {
 
     fprintf(stdout, "\n");
     fprintf(stdout, "GPU buffer info (%s):\n", bufferName);
-    fprintf(stdout, "    size = %ld\n", size);
-    fprintf(stdout, "    shape = l:%d b:%ld r:%ld c:%ld\n", shape.l, shape.b, shape.r, shape.c);
+    fprintf(stdout, "    size = %" PRId64 "\n", size);
+    fprintf(stdout, "    shape = l:%" PRId64 " b:%" PRId64 " r:%" PRId64 " c:%" PRId64 "\n", shape.l, shape.b, shape.r, shape.c);
     fprintf(stdout, "    type = %s\n", get_TensorType_name(buffer->type).c_str());
 }
 
@@ -333,7 +357,7 @@ void print_ggml_tensor_info(struct ggml_tensor * tensor, const char* tensorName)
     fprintf(stdout, "\n");
     fprintf(stdout, "Tensor info (%s):\n", tensorName);
     fprintf(stdout, "    dims = %d\n", tensor->n_dims);
-    fprintf(stdout, "    shape = %ld (row) %ld (col) %ld %ld\n", shape[1], shape[0], shape[2], shape[3]);
+    fprintf(stdout, "    shape = %" PRId64 " (row) %" PRId64 " (col) %" PRId64 " %" PRId64 "\n", shape[1], shape[0], shape[2], shape[3]);
     fprintf(stdout, "    strides = %ld %ld %ld %ld\n", strides[1], strides[0], strides[2], strides[3]);
     fprintf(stdout, "    type = %s\n", llama_ggml_type_to_str(tensor->type).c_str());
 }
@@ -597,7 +621,6 @@ static const int64_t kMatMulTileSizeY = 1; // 1
 
 ComputePipeline pipeline_mat_mul(
         WGPUDevice device,
-        WGPUQueue queue,
         const TensorBuffer& A,
         const TensorBuffer& B,
         const TensorBuffer& C,
@@ -618,7 +641,6 @@ ComputePipeline pipeline_mat_mul(
           .type = WGPUBufferBindingType_ReadOnlyStorage,
           .hasDynamicOffset = false,
         },
-        .storageTexture = {nullptr},
       },
       WGPUBindGroupLayoutEntry{
         // Binding 1: Weight matrix.
@@ -628,7 +650,6 @@ ComputePipeline pipeline_mat_mul(
           .type = WGPUBufferBindingType_ReadOnlyStorage,
           .hasDynamicOffset = false,
         },
-        .storageTexture = {nullptr},
       },
       WGPUBindGroupLayoutEntry{
         // Binding 2: Output matrix
@@ -638,7 +659,6 @@ ComputePipeline pipeline_mat_mul(
           .type = WGPUBufferBindingType_Storage,
           .hasDynamicOffset = false,
         },
-        .storageTexture = {nullptr},
       },
     };
     
@@ -652,7 +672,6 @@ ComputePipeline pipeline_mat_mul(
                 .type = WGPUBufferBindingType_Uniform,
                 .hasDynamicOffset = false,
               },
-              .storageTexture = {nullptr},
             }); 
     }
     
@@ -726,7 +745,7 @@ ComputePipeline pipeline_mat_mul(
     }
     code += std::string(wgsl_gemm_body);
     ComputePipeline pipeline = 
-        create_compute_pipeline(device, queue, code.c_str(), bglEntries, label);
+        create_compute_pipeline(device, code.c_str(), bglEntries, label);
 
     store_pipeline_validation(pipeline, &A, &B, &C);
     
@@ -735,7 +754,6 @@ ComputePipeline pipeline_mat_mul(
 
 CommandBuffer cmdbuf_mat_mul(
         WGPUDevice device,
-        WGPUQueue queue,
         WGPUCommandEncoder encoder,
         WGPUComputePassEncoder pass,
         ComputePipeline* pipeline,
@@ -754,7 +772,7 @@ CommandBuffer cmdbuf_mat_mul(
     // The following allows construction of pipelines and avoids high-level code duplication.
     ComputePipeline pipelineTemp{}; // Memory of this local variable is referenced throughout the function.
     if (!pipeline || !pipeline->is_valid()) {
-        pipelineTemp = pipeline_mat_mul(device, queue, A, B, C, transposeB, uniforms);
+        pipelineTemp = pipeline_mat_mul(device, A, B, C, transposeB, uniforms);
         if (pipeline && pipeline->buildPipelineFlag) {
             *pipeline = std::move(pipelineTemp);
             return {};
@@ -808,7 +826,6 @@ CommandBuffer cmdbuf_mat_mul(
 
     int64_t M = A.shape.r;
     int64_t N = B.shape.c;
-    int64_t K = A.shape.c;
 
     int64_t divisorX = (kMatMulWorkgroupX * kMatMulTileSizeX);
     int64_t divisorY = (kMatMulWorkgroupY * kMatMulTileSizeY);
@@ -926,7 +943,6 @@ static bool validate_transpose(
 
 static ComputePipeline pipeline_transpose(
         WGPUDevice device,
-        WGPUQueue queue,
         const TensorBuffer& A,
         const TensorBuffer& B,
         bool zy,
@@ -939,38 +955,32 @@ static ComputePipeline pipeline_transpose(
 
     std::vector<WGPUBindGroupLayoutEntry> bglEntries = {
       WGPUBindGroupLayoutEntry{
-        // Binding 0: Input/output matrix
         .binding = 0,
         .visibility = WGPUShaderStage_Compute,
         .buffer = WGPUBufferBindingLayout{
           .type = WGPUBufferBindingType_ReadOnlyStorage,
           .hasDynamicOffset = false,
         },
-        .storageTexture = {nullptr},
       },
       WGPUBindGroupLayoutEntry{
-        // Binding 1: 
         .binding = 1,
         .visibility = WGPUShaderStage_Compute,
         .buffer = WGPUBufferBindingLayout{
           .type = WGPUBufferBindingType_Storage,
           .hasDynamicOffset = false,
         },
-        .storageTexture = {nullptr},
       },
     };
     
     if (useUniforms) {
         bglEntries.push_back(
             WGPUBindGroupLayoutEntry{
-              // Binding 2: 
               .binding = 2,
               .visibility = WGPUShaderStage_Compute,
               .buffer = WGPUBufferBindingLayout{
                 .type = WGPUBufferBindingType_Uniform,
                 .hasDynamicOffset = false,
               },
-              .storageTexture = {nullptr},
             }); 
     }
 
@@ -1019,7 +1029,7 @@ static ComputePipeline pipeline_transpose(
     }
     code += std::string(wgsl_transpose_body_f32);
     ComputePipeline pipeline = 
-        create_compute_pipeline(device, queue, code.c_str(), bglEntries, label);
+        create_compute_pipeline(device, code.c_str(), bglEntries, label);
 
     store_pipeline_validation(pipeline, &A, &B);
       
@@ -1030,7 +1040,6 @@ static ComputePipeline pipeline_transpose(
 // zy parameter.
 CommandBuffer cmdbuf_transpose(
         WGPUDevice device,
-        WGPUQueue queue,
         WGPUCommandEncoder encoder,
         WGPUComputePassEncoder pass,
         ComputePipeline* pipeline,
@@ -1051,7 +1060,7 @@ CommandBuffer cmdbuf_transpose(
     // The following allows construction of pipelines and avoids high-level code duplication.
     ComputePipeline pipelineTemp{}; // Memory of this local variable is referenced throughout the function.
     if (!pipeline || !pipeline->is_valid()) {
-        pipelineTemp = pipeline_transpose(device, queue, A, B, zy, useUniforms, M, N);
+        pipelineTemp = pipeline_transpose(device, A, B, zy, useUniforms, M, N);
         if (pipeline && pipeline->buildPipelineFlag) {
             *pipeline = std::move(pipelineTemp);
             return {};
@@ -1197,7 +1206,6 @@ fn main(
 
 static ComputePipeline pipeline_rms_norm(
         WGPUDevice device,
-        WGPUQueue queue,
         const TensorBuffer& A) {
     const char* label = "rms_norm";
 
@@ -1210,14 +1218,13 @@ static ComputePipeline pipeline_rms_norm(
               .type = WGPUBufferBindingType_Storage,
               .hasDynamicOffset = false,
             },
-            .storageTexture = {nullptr},
         },
     };
 
     std::string code = "\nconst N = " + std::to_string(A.shape.c) + ";\n";
     code += std::string(wgsl_rms_norm);
     ComputePipeline pipeline = 
-        create_compute_pipeline(device, queue, code.c_str(), bglEntries, label);
+        create_compute_pipeline(device, code.c_str(), bglEntries, label);
 
     store_pipeline_validation(pipeline, &A);
 
@@ -1226,7 +1233,6 @@ static ComputePipeline pipeline_rms_norm(
 
 CommandBuffer cmdbuf_rms_norm(
         WGPUDevice device,
-        WGPUQueue queue,
         WGPUCommandEncoder encoder,
         WGPUComputePassEncoder pass,
         ComputePipeline* pipeline,
@@ -1235,7 +1241,7 @@ CommandBuffer cmdbuf_rms_norm(
     // The following allows construction of pipelines and avoids high-level code duplication.
     ComputePipeline pipelineTemp{}; // Memory of this local variable is referenced throughout the function.
     if (!pipeline || !pipeline->is_valid()) {
-        pipelineTemp = pipeline_rms_norm(device, queue, A);
+        pipelineTemp = pipeline_rms_norm(device, A);
         if (pipeline && pipeline->buildPipelineFlag) {
             *pipeline = std::move(pipelineTemp);
             return {};
@@ -1314,10 +1320,10 @@ fn main(
 )";
 
 static bool validate_row_element_multiply(
-        const TensorBuffer& A,
+        const TensorBuffer& /*A*/,
         const TensorBuffer& B) {
     if (B.shape.r != 1) {
-        printf("create_row_element_multiply: Expected B to have 1 row, got %ld\n", B.shape.r);
+        printf("create_row_element_multiply: Expected B to have 1 row, got %" PRId64 "\n", B.shape.r);
         assert(false);
         return false;
     }
@@ -1327,7 +1333,6 @@ static bool validate_row_element_multiply(
 
 static ComputePipeline pipeline_row_element_multiply(
         WGPUDevice device,
-        WGPUQueue queue,
         const TensorBuffer& A,
         const TensorBuffer& B) {
     if (!validate_row_element_multiply(A,B)) {
@@ -1338,31 +1343,27 @@ static ComputePipeline pipeline_row_element_multiply(
 
     std::vector<WGPUBindGroupLayoutEntry> bglEntries = {
       WGPUBindGroupLayoutEntry{
-        // Binding 0: Input/output matrix
         .binding = 0,
         .visibility = WGPUShaderStage_Compute,
         .buffer = WGPUBufferBindingLayout{
           .type = WGPUBufferBindingType_Storage,
           .hasDynamicOffset = false,
         },
-        .storageTexture = {nullptr},
       },
       WGPUBindGroupLayoutEntry{
-        // Binding 1: 
         .binding = 1,
         .visibility = WGPUShaderStage_Compute,
         .buffer = WGPUBufferBindingLayout{
           .type = WGPUBufferBindingType_ReadOnlyStorage,
           .hasDynamicOffset = false,
         },
-        .storageTexture = {nullptr},
       },
     };
 
     std::string code = "\nconst N = " + std::to_string(A.shape.c) + ";\n";
     code += std::string(wgsl_row_element_multiply);
     ComputePipeline pipeline = 
-        create_compute_pipeline(device, queue, code.c_str(), bglEntries, label);
+        create_compute_pipeline(device, code.c_str(), bglEntries, label);
 
     store_pipeline_validation(pipeline, &A, &B);
       
@@ -1371,7 +1372,6 @@ static ComputePipeline pipeline_row_element_multiply(
 
 CommandBuffer cmdbuf_row_element_multiply(
         WGPUDevice device,
-        WGPUQueue queue,
         WGPUCommandEncoder encoder,
         WGPUComputePassEncoder pass,
         ComputePipeline* pipeline,
@@ -1385,7 +1385,7 @@ CommandBuffer cmdbuf_row_element_multiply(
     // The following allows construction of pipelines and avoids high-level code duplication.
     ComputePipeline pipelineTemp{}; // Memory of this local variable is referenced throughout the function.
     if (!pipeline || !pipeline->is_valid()) {
-        pipelineTemp = pipeline_row_element_multiply(device, queue, A, B);
+        pipelineTemp = pipeline_row_element_multiply(device, A, B);
         if (pipeline && pipeline->buildPipelineFlag) {
             *pipeline = std::move(pipelineTemp);
             return {};
@@ -1498,30 +1498,25 @@ fn main(
 
 ComputePipeline pipeline_RoPE(
         WGPUDevice device,
-        WGPUQueue queue,
         const TensorBuffer& A) {
     const char* label = "RoPE";
 
     std::vector<WGPUBindGroupLayoutEntry> bglEntries = {
       WGPUBindGroupLayoutEntry{
-        // Binding 0: Input/output matrix
         .binding = 0,
         .visibility = WGPUShaderStage_Compute,
         .buffer = WGPUBufferBindingLayout{
           .type = WGPUBufferBindingType_Storage,
           .hasDynamicOffset = false,
         },
-        .storageTexture = {nullptr},
       },
       WGPUBindGroupLayoutEntry{
-        // Binding 0: Input/output matrix
         .binding = 1,
         .visibility = WGPUShaderStage_Compute,
         .buffer = WGPUBufferBindingLayout{
           .type = WGPUBufferBindingType_Uniform,
           .hasDynamicOffset = false,
         },
-        .storageTexture = {nullptr},
       },
     };
 
@@ -1536,7 +1531,7 @@ ComputePipeline pipeline_RoPE(
     code += "\nconst kWorkgroupSizeY : u32 = " + std::to_string(kRoPEWorkgroupSizeY) + ";\n";
     code += std::string(wgsl_gpu_rope);
     ComputePipeline pipeline = 
-        create_compute_pipeline(device, queue, code.c_str(), bglEntries, label);
+        create_compute_pipeline(device, code.c_str(), bglEntries, label);
 
     store_pipeline_validation(pipeline, &A);
 
@@ -1545,7 +1540,6 @@ ComputePipeline pipeline_RoPE(
 
 CommandBuffer cmdbuf_RoPE(
         WGPUDevice device,
-        WGPUQueue queue,
         WGPUCommandEncoder encoder,
         WGPUComputePassEncoder pass,
         ComputePipeline* pipeline,
@@ -1555,7 +1549,7 @@ CommandBuffer cmdbuf_RoPE(
     // The following allows construction of pipelines and avoids high-level code duplication.
     ComputePipeline pipelineTemp{}; // Memory of this local variable is referenced throughout the function.
     if (!pipeline || !pipeline->is_valid()) {
-        pipelineTemp = pipeline_RoPE(device, queue, A);
+        pipelineTemp = pipeline_RoPE(device, A);
         if (pipeline && pipeline->buildPipelineFlag) {
             *pipeline = std::move(pipelineTemp);
             return {};
@@ -1715,10 +1709,9 @@ static const int64_t kMaskedSoftmaxWorkgroupY = 8;
 
 ComputePipeline pipeline_masked_softmax(
         WGPUDevice device,
-        WGPUQueue queue,
         const TensorBuffer& inputOutputBuffer,
         bool useUniforms,
-        int64_t B, int64_t M, int64_t N) {
+        int64_t /*B*/, int64_t M, int64_t N) {
     const char* label = "masked_softmax";
 
     std::vector<WGPUBindGroupLayoutEntry> bglEntries = {
@@ -1730,7 +1723,6 @@ ComputePipeline pipeline_masked_softmax(
           .type = WGPUBufferBindingType_Storage,
           .hasDynamicOffset = false,
         },
-        .storageTexture = {nullptr},
       },
     };
 
@@ -1743,7 +1735,6 @@ ComputePipeline pipeline_masked_softmax(
                 .type = WGPUBufferBindingType_Uniform,
                 .hasDynamicOffset = false,
               },
-              .storageTexture = {nullptr},
             }); 
     }
 
@@ -1778,7 +1769,7 @@ ComputePipeline pipeline_masked_softmax(
     }
     code += std::string(wgsl_masked_softmax_body);
     ComputePipeline pipeline = 
-        create_compute_pipeline(device, queue, code.c_str(), bglEntries, label);
+        create_compute_pipeline(device, code.c_str(), bglEntries, label);
 
     store_pipeline_validation(pipeline, &inputOutputBuffer);
     
@@ -1787,7 +1778,6 @@ ComputePipeline pipeline_masked_softmax(
 
 CommandBuffer cmdbuf_masked_softmax(
         WGPUDevice device,
-        WGPUQueue queue,
         WGPUCommandEncoder encoder,     // Optional (use nullptr)
         WGPUComputePassEncoder pass,    // Optional (use nullptr - takes precedence over encoder)
         ComputePipeline* pipeline,
@@ -1804,7 +1794,7 @@ CommandBuffer cmdbuf_masked_softmax(
     // The following allows construction of pipelines and avoids high-level code duplication.
     ComputePipeline pipelineTemp{}; // Memory of this local variable is referenced throughout the function.
     if (!pipeline || !pipeline->is_valid()) {
-        pipelineTemp = pipeline_masked_softmax(device, queue, inputOutputBuffer, useUniforms, B, M, N);
+        pipelineTemp = pipeline_masked_softmax(device, inputOutputBuffer, useUniforms, B, M, N);
         if (pipeline && pipeline->buildPipelineFlag) {
             *pipeline = std::move(pipelineTemp);
             return {};
@@ -1977,10 +1967,9 @@ static const char* wgsl_row_softmax_body = R"(
 
 ComputePipeline pipeline_row_softmax(
         WGPUDevice device,
-        WGPUQueue queue,
         const TensorBuffer& inputOutputBuffer,
         bool useUniforms,
-        int64_t B, int64_t M, int64_t N) {
+        int64_t /*B*/, int64_t M, int64_t N) {
     const char* label = "row_softmax";
 
     std::vector<WGPUBindGroupLayoutEntry> bglEntries = {
@@ -1991,7 +1980,6 @@ ComputePipeline pipeline_row_softmax(
           .type = WGPUBufferBindingType_Storage,
           .hasDynamicOffset = false,
         },
-        .storageTexture = {nullptr},
       },
     };
 
@@ -2004,12 +1992,10 @@ ComputePipeline pipeline_row_softmax(
                 .type = WGPUBufferBindingType_Uniform,
                 .hasDynamicOffset = false,
               },
-              .storageTexture = {nullptr},
             }); 
     }
     
     // WorkgroupSize must be a power of 2 due to parallel reduction.
-    int64_t cpt = 1; // Columns per thread.
     int64_t kWorkgroupSize = 256;
 
     std::string code = "";
@@ -2043,7 +2029,7 @@ ComputePipeline pipeline_row_softmax(
     }
     code += std::string(wgsl_row_softmax_body);
     ComputePipeline pipeline = 
-        create_compute_pipeline(device, queue, code.c_str(), bglEntries, label);
+        create_compute_pipeline(device, code.c_str(), bglEntries, label);
     
     store_pipeline_validation(pipeline, &inputOutputBuffer);
 
@@ -2052,7 +2038,6 @@ ComputePipeline pipeline_row_softmax(
 
 CommandBuffer cmdbuf_row_softmax(
         WGPUDevice device,
-        WGPUQueue queue,
         WGPUCommandEncoder encoder,
         WGPUComputePassEncoder pass,
         ComputePipeline* pipeline,
@@ -2069,7 +2054,7 @@ CommandBuffer cmdbuf_row_softmax(
     // The following allows construction of pipelines and avoids high-level code duplication.
     ComputePipeline pipelineTemp{}; // Memory of this local variable is referenced throughout the function.
     if (!pipeline || !pipeline->is_valid()) {
-        pipelineTemp = pipeline_row_softmax(device, queue, inputOutputBuffer, useUniforms, B, M, N);
+        pipelineTemp = pipeline_row_softmax(device, inputOutputBuffer, useUniforms, B, M, N);
         if (pipeline && pipeline->buildPipelineFlag) {
             *pipeline = std::move(pipelineTemp);
             return {};
@@ -2190,9 +2175,8 @@ static bool validate_addition(
     return true;
 }
 
-ComputePipeline pipeline_addition(
+static ComputePipeline pipeline_addition(
         WGPUDevice device,
-        WGPUQueue queue,
         const TensorBuffer& a,
         const TensorBuffer& b,
         const TensorBuffer& c,
@@ -2211,7 +2195,6 @@ ComputePipeline pipeline_addition(
           .type = WGPUBufferBindingType_ReadOnlyStorage,
           .hasDynamicOffset = false,
         },
-        .storageTexture = {nullptr},
       },
       WGPUBindGroupLayoutEntry{
         .binding = 1,
@@ -2220,7 +2203,6 @@ ComputePipeline pipeline_addition(
           .type = WGPUBufferBindingType_ReadOnlyStorage,
           .hasDynamicOffset = false,
         },
-        .storageTexture = {nullptr},
       },
       WGPUBindGroupLayoutEntry{
         .binding = 2,
@@ -2229,7 +2211,6 @@ ComputePipeline pipeline_addition(
           .type = WGPUBufferBindingType_Storage,
           .hasDynamicOffset = false,
         },
-        .storageTexture = {nullptr},
       },
     };
 
@@ -2249,7 +2230,7 @@ ComputePipeline pipeline_addition(
     code += "\nconst kWorkgroupY = " + std::to_string(kAdditionWorkgroupY) + ";\n";
     code += std::string(wgsl_addition);
     ComputePipeline pipeline = 
-        create_compute_pipeline(device, queue, code.c_str(), bglEntries, label);
+        create_compute_pipeline(device, code.c_str(), bglEntries, label);
 
     store_pipeline_validation(pipeline, &a, &b, &c);
 
@@ -2258,7 +2239,6 @@ ComputePipeline pipeline_addition(
 
 CommandBuffer cmdbuf_addition(
         WGPUDevice device,
-        WGPUQueue queue,
         WGPUCommandEncoder encoder,     // Optional (use nullptr)
         WGPUComputePassEncoder pass,    // Optional (use nullptr - takes precedence over encoder)
         ComputePipeline* pipeline,
@@ -2277,7 +2257,7 @@ CommandBuffer cmdbuf_addition(
     // The following allows construction of pipelines and avoids high-level code duplication.
     ComputePipeline pipelineTemp{}; // Memory of this local variable is referenced throughout the function.
     if (!pipeline || !pipeline->is_valid()) {
-        pipelineTemp = pipeline_addition(device, queue, a, b, c, B, M, N);
+        pipelineTemp = pipeline_addition(device, a, b, c, B, M, N);
         if (pipeline && pipeline->buildPipelineFlag) {
             *pipeline = std::move(pipelineTemp);
             return {};
@@ -2391,7 +2371,6 @@ fn main(
 
 CommandBuffer create_element_mult(
         WGPUDevice device,
-        WGPUQueue queue,
         WGPUCommandEncoder encoder,     // Optional (use nullptr)
         WGPUComputePassEncoder pass,    // Optional (use nullptr - takes precedence over encoder)
         const TensorBuffer& a,
@@ -2419,7 +2398,6 @@ CommandBuffer create_element_mult(
           .type = WGPUBufferBindingType_ReadOnlyStorage,
           .hasDynamicOffset = false,
         },
-        .storageTexture = {nullptr},
       },
       WGPUBindGroupLayoutEntry{
         .binding = 1,
@@ -2428,7 +2406,6 @@ CommandBuffer create_element_mult(
           .type = WGPUBufferBindingType_ReadOnlyStorage,
           .hasDynamicOffset = false,
         },
-        .storageTexture = {nullptr},
       },
       WGPUBindGroupLayoutEntry{
         .binding = 2,
@@ -2437,7 +2414,6 @@ CommandBuffer create_element_mult(
           .type = WGPUBufferBindingType_Storage,
           .hasDynamicOffset = false,
         },
-        .storageTexture = {nullptr},
       },
     };
 
@@ -2463,7 +2439,7 @@ CommandBuffer create_element_mult(
     code += "\nconst kWorkgroupY = " + std::to_string(kWorkgroupY) + ";\n";
     code += std::string(wgsl_element_wise_mult);
     ComputePipeline pipeline = 
-        create_compute_pipeline(device, queue, code.c_str(), bglEntries, label);
+        create_compute_pipeline(device, code.c_str(), bglEntries, label);
 
     std::vector<WGPUBindGroupEntry> bgEntries = {
       WGPUBindGroupEntry{
@@ -2572,7 +2548,6 @@ static bool validate_element_mult_in_place(
 
 ComputePipeline pipeline_element_mult_in_place(
         WGPUDevice device,
-        WGPUQueue queue,
         const TensorBuffer& a,
         const TensorBuffer& b,
         int64_t B, int64_t M, int64_t N) {
@@ -2590,7 +2565,6 @@ ComputePipeline pipeline_element_mult_in_place(
           .type = WGPUBufferBindingType_Storage,
           .hasDynamicOffset = false,
         },
-        .storageTexture = {nullptr},
       },
       WGPUBindGroupLayoutEntry{
         .binding = 1,
@@ -2599,7 +2573,6 @@ ComputePipeline pipeline_element_mult_in_place(
           .type = WGPUBufferBindingType_ReadOnlyStorage,
           .hasDynamicOffset = false,
         },
-        .storageTexture = {nullptr},
       },
     };
 
@@ -2611,7 +2584,7 @@ ComputePipeline pipeline_element_mult_in_place(
     code += "\nconst kWorkgroupY = " + std::to_string(kHadamardInPlaceWorkgroupY) + ";\n";
     code += std::string(wgsl_element_wise_mult_in_place);
     ComputePipeline pipeline = 
-        create_compute_pipeline(device, queue, code.c_str(), bglEntries, label);
+        create_compute_pipeline(device, code.c_str(), bglEntries, label);
 
     store_pipeline_validation(pipeline, &a, &b);
       
@@ -2620,7 +2593,6 @@ ComputePipeline pipeline_element_mult_in_place(
 
 CommandBuffer cmdbuf_element_mult_in_place(
         WGPUDevice device,
-        WGPUQueue queue,
         WGPUCommandEncoder encoder,
         WGPUComputePassEncoder pass,
         ComputePipeline* pipeline,
@@ -2638,7 +2610,7 @@ CommandBuffer cmdbuf_element_mult_in_place(
     // The following allows construction of pipelines and avoids high-level code duplication.
     ComputePipeline pipelineTemp{}; // Memory of this local variable is referenced throughout the function.
     if (!pipeline || !pipeline->is_valid()) {
-        pipelineTemp = pipeline_element_mult_in_place(device, queue, a, b, B, M, N);
+        pipelineTemp = pipeline_element_mult_in_place(device, a, b, B, M, N);
         if (pipeline && pipeline->buildPipelineFlag) {
             *pipeline = std::move(pipelineTemp);
             return {};
@@ -2746,7 +2718,6 @@ static const int64_t kSiluWorkgroupY = 8;
 
 ComputePipeline pipeline_silu(
         WGPUDevice device,
-        WGPUQueue queue,
         const TensorBuffer& a,
         int64_t B, int64_t M, int64_t N) {
     const char* label = "silu";
@@ -2759,7 +2730,6 @@ ComputePipeline pipeline_silu(
           .type = WGPUBufferBindingType_Storage,
           .hasDynamicOffset = false,
         },
-        .storageTexture = {nullptr},
       },
     };
 
@@ -2779,7 +2749,7 @@ ComputePipeline pipeline_silu(
     code += "\nconst kWorkgroupY = " + std::to_string(workgroupY) + ";\n";
     code += std::string(wgsl_silu);
     ComputePipeline pipeline = 
-        create_compute_pipeline(device, queue, code.c_str(), bglEntries, label);
+        create_compute_pipeline(device, code.c_str(), bglEntries, label);
 
     store_pipeline_validation(pipeline, &a);
     
@@ -2788,7 +2758,6 @@ ComputePipeline pipeline_silu(
 
 CommandBuffer cmdbuf_silu(
         WGPUDevice device,
-        WGPUQueue queue,
         WGPUCommandEncoder encoder,     // Optional (use nullptr)
         WGPUComputePassEncoder pass,    // Optional (use nullptr - takes precedence over encoder)
         ComputePipeline* pipeline,
@@ -2801,7 +2770,7 @@ CommandBuffer cmdbuf_silu(
     // The following allows construction of pipelines and avoids high-level code duplication.
     ComputePipeline pipelineTemp{}; // Memory of this local variable is referenced throughout the function.
     if (!pipeline || !pipeline->is_valid()) {
-        pipelineTemp = pipeline_silu(device, queue, a, B, M, N);
+        pipelineTemp = pipeline_silu(device, a, B, M, N);
         if (pipeline && pipeline->buildPipelineFlag) {
             *pipeline = std::move(pipelineTemp);
             return {};
@@ -2986,7 +2955,6 @@ static bool validate_vector_mat_mul_trans(
 
 static ComputePipeline pipeline_vector_mat_mul_trans(
         WGPUDevice device,
-        WGPUQueue queue,
         const TensorBuffer& A,
         const TensorBuffer& B,
         const TensorBuffer& C) {
@@ -2999,34 +2967,28 @@ static ComputePipeline pipeline_vector_mat_mul_trans(
 
     std::vector<WGPUBindGroupLayoutEntry> bglEntries = {
         WGPUBindGroupLayoutEntry{
-            // Binding 0: Input matrix
             .binding = 0,
             .visibility = WGPUShaderStage_Compute,
             .buffer = WGPUBufferBindingLayout{
               .type = WGPUBufferBindingType_ReadOnlyStorage,
               .hasDynamicOffset = false,
             },
-            .storageTexture = {nullptr},
         },
         WGPUBindGroupLayoutEntry{
-            // Binding 1: Weight matrix.
             .binding = 1,
             .visibility = WGPUShaderStage_Compute,
             .buffer = WGPUBufferBindingLayout{
               .type = WGPUBufferBindingType_ReadOnlyStorage,
               .hasDynamicOffset = false,
             },
-            .storageTexture = {nullptr},
         },
         WGPUBindGroupLayoutEntry{
-            // Binding 2: Output matrix
             .binding = 2,
             .visibility = WGPUShaderStage_Compute,
             .buffer = WGPUBufferBindingLayout{
               .type = WGPUBufferBindingType_Storage,
               .hasDynamicOffset = false,
             },
-            .storageTexture = {nullptr},
         },
     };
     
@@ -3079,7 +3041,7 @@ static ComputePipeline pipeline_vector_mat_mul_trans(
     code += std::string(wgsl_fp16_to_fp32);
     code += std::string(wgsl_vector_mat_mul_transpose);
     ComputePipeline pipeline = 
-        create_compute_pipeline(device, queue, code.c_str(), bglEntries, label);
+        create_compute_pipeline(device, code.c_str(), bglEntries, label);
     
     store_pipeline_validation(pipeline, &A, &B, &C);
 
@@ -3088,7 +3050,6 @@ static ComputePipeline pipeline_vector_mat_mul_trans(
 
 CommandBuffer cmdbuf_vector_mat_mul_trans(
         WGPUDevice device,
-        WGPUQueue queue,
         WGPUCommandEncoder encoder,     // Optional (use nullptr)
         WGPUComputePassEncoder pass,    // Optional (use nullptr - takes precedence over encoder)
         ComputePipeline* pipeline,
@@ -3104,7 +3065,7 @@ CommandBuffer cmdbuf_vector_mat_mul_trans(
     // The following allows construction of pipelines and avoids high-level code duplication.
     ComputePipeline pipelineTemp{}; // Memory of this local variable is referenced throughout the function.
     if (!pipeline || !pipeline->is_valid()) {
-        pipelineTemp = pipeline_vector_mat_mul_trans(device, queue, A, B, C);
+        pipelineTemp = pipeline_vector_mat_mul_trans(device, A, B, C);
         if (pipeline && pipeline->buildPipelineFlag) {
             *pipeline = std::move(pipelineTemp);
             return {};
@@ -3182,5 +3143,1216 @@ CommandBuffer cmdbuf_vector_mat_mul_trans(
     return out;
 }
 
+
+static const char* wgsl_vector_mat_mul_split_transpose_header = R"(
+struct Uniforms {
+    A_B : u32,
+    A_M : u32,
+    A_N : u32,
+    split : u32, // Split 0, 1, 2, 3
+    B_B : u32,
+    B_M : u32,
+    B_N : u32,
+    totalSplits : u32 // Total number of splits
+};
+@group(0) @binding(3) var<uniform> uniforms : Uniforms;
+
+var<workgroup> mshare : array<f32,kWorkgroupSize>;
+
+@compute @workgroup_size(kWorkgroupSize, 1u, 1u)
+fn main(
+  @builtin(workgroup_id) wid : vec3<u32>,
+  @builtin(local_invocation_id) lid : vec3<u32>
+)
+{
+)";
+static const char* wgsl_vector_mat_mul_split_transpose_body = R"(
+  var bs : u32 = 1;
+  if (is_b_f16) { bs = 2; }
+
+  let matStrideA : u32 = 1 * C * wid.z;
+  let matStrideB : u32 = R * C * wid.z;
+  let matStrideO : u32 = 1 * R * wid.z;
+  
+  let bSplitSize : u32 = C / uniforms.totalSplits;
+  let bColOff : u32 = uniforms.split * bSplitSize;
+
+  //               batch           col
+  let aIndex = matStrideA + lid.x*kTileSize  + bColOff;
+  let bIndex = matStrideB + lid.x*kTileSize  + wid.x*C + bColOff;
+  let cIndex = matStrideO + wid.x;
+
+  let si = lid.x;
+
+  var sum : f32 = 0.0;
+  for (var i : u32 = 0; i < kTileSize; i = i + 1) {
+    if (is_b_f16) {
+      let f16_part = (bIndex + i) % 2;
+      let b = compute_fp16_to_fp32(u32(b[(bIndex + i)/bs]), f16_part);
+      sum = sum + a[aIndex + i] * b;
+    } else {
+      sum = sum + a[aIndex + i] * f32(b[bIndex + i]);
+    }
+  }
+
+  mshare[si] = sum;
+
+  workgroupBarrier();
+  
+  for (var stride : u32 = kWorkgroupSize / 2; stride > 0; stride = stride / 2) {
+    if (lid.x < stride) {
+      mshare[si] = mshare[si] + mshare[si+stride];
+    }
+    workgroupBarrier();
+  }
+
+  if (lid.x == 0) {
+    //c[cIndex] = f32(uniforms.split);//mshare[si];
+    c[cIndex] = mshare[si];
+  }
+}
+)";
+
+static bool validate_vector_mat_mul_split_trans(
+        const TensorBuffer& A,
+        const TensorBuffer& B,
+        const TensorBuffer& C,
+        const std::vector<TensorBuffer*>& scratchBuffers) {
+    if (A.type != TensorType_F32) {
+        fprintf(stderr, "create_vector_mat_mul_trans: A.type != TensorType_F32\n");
+        assert(false);
+        return false;
+    }
+
+    if (!(B.type == TensorType_F32 || B.type == TensorType_F16)) {
+        fprintf(stderr, "create_vector_mat_mul_trans: B.type != TensorType_F32 or TensorType_F16\n");
+        assert(false);
+        return false;
+    }
+
+    if (C.type != TensorType_F32) {
+        fprintf(stderr, "create_vector_mat_mul_trans: C.type != TensorType_F32\n");
+        assert(false);
+        return false;
+    }
+
+    if (A.shape.c != B.shape.c) {
+        fprintf(stderr, "create_vector_mat_mul_trans: Expecting number of columns in A to match B\n");
+        assert(false);
+        return false;
+    }
+    
+    if (B.shape.r == 0 || B.shape.c == 0) {
+        printf("create_vector_mat_mul_trans: one of the dimensions of B is zero.\n");
+        assert(false);
+        return false;
+    }
+
+    if (A.shape.b > 1) {
+        if (A.shape.b != B.shape.b) {
+            printf("create_vector_mat_mul_trans: A.shape.b != B.shape.b\n");
+            assert(false);
+            return false;
+        }
+
+        if (A.shape.b != C.shape.b) {
+            printf("create_vector_mat_mul_trans: A.shape.b != C.shape.b\n");
+            assert(false);
+            return false;
+        }
+    }
+
+    if (C.shape.c != B.shape.r) { // Inverted from what we would expect as we are performing a transpose.
+        printf("C's number of columns do not match B's\n");
+        assert(false);
+        return false;
+    }
+    
+    //for (TensorBuffer* buffer : scratchBuffers) {
+    //    if (C.shape != buffer->shape) {
+    //        printf("C.shape != CScratch.shape\n");
+    //        assert(false);
+    //        return false;
+    //    }
+    //}
+
+    return true;
+}
+
+
+static ComputePipeline pipeline_vector_mat_mul_split_trans(
+        WGPUDevice device,
+        const TensorBuffer& A,
+        const TensorBuffer& B,
+        const TensorBuffer& C,
+        const std::vector<TensorBuffer*>& scratchBuffers,
+        int numSplits,
+        bool useDimsFromUniforms) {
+    // Computing pipeline for vector x matrix.
+    if (!validate_vector_mat_mul_split_trans(A, B, C, scratchBuffers)) {
+        return {};
+    }
+
+    const char* label = "vector_mat_mul_split";
+
+    std::vector<WGPUBindGroupLayoutEntry> bglEntries = {
+        WGPUBindGroupLayoutEntry{
+            .binding = 0,
+            .visibility = WGPUShaderStage_Compute,
+            .buffer = WGPUBufferBindingLayout{
+              .type = WGPUBufferBindingType_ReadOnlyStorage,
+              .hasDynamicOffset = false,
+            },
+        },
+        WGPUBindGroupLayoutEntry{
+            .binding = 1,
+            .visibility = WGPUShaderStage_Compute,
+            .buffer = WGPUBufferBindingLayout{
+              .type = WGPUBufferBindingType_ReadOnlyStorage,
+              .hasDynamicOffset = false,
+            },
+        },
+        WGPUBindGroupLayoutEntry{
+            .binding = 2,
+            .visibility = WGPUShaderStage_Compute,
+            .buffer = WGPUBufferBindingLayout{
+              .type = WGPUBufferBindingType_Storage,
+              .hasDynamicOffset = false,
+            },
+        },
+        WGPUBindGroupLayoutEntry{
+            .binding = 3,
+            .visibility = WGPUShaderStage_Compute,
+            .buffer = WGPUBufferBindingLayout{
+              .type = WGPUBufferBindingType_Uniform,
+              .hasDynamicOffset = false,
+            },
+        },
+    };
+    
+    int64_t rows = B.shape.r;
+    int64_t cols = B.shape.c;
+
+    // Note workgroup size (gWorkgroupX*gWorkgroupY) shouldn't exceed 256.
+    const int64_t kWorkgroupSize = 256;
+
+    if ((cols / numSplits) < kWorkgroupSize) {
+        printf("A columns is less than kWorkgroupSize cols:%d numSplits:%d kWorkgroupSize:%d\n", cols, numSplits, kWorkgroupSize);
+
+        assert(false);
+        return {};
+    }
+
+    if (((cols / numSplits) % kWorkgroupSize) != 0) {
+        printf("A is not a multiple of kWorkgroupSize\n");
+        assert(false);
+        return {};
+    }
+
+    const int64_t kTileSize = (cols / numSplits) / kWorkgroupSize; // 1
+
+    bool is_f16 = (B.type == TensorType_F16);
+    std::string is_f16_str = "false";
+    if (is_f16) { is_f16_str = "true"; }
+
+    
+    // TODO:  Use uniform buffers for the ability to change sizes of input matrices.
+    //        We shouldn't recreate pipelines.
+    // Add embedding dims.
+    std::string code = "";
+    code += "\nconst kWorkgroupSize : u32 = " + std::to_string(kWorkgroupSize) + ";\n";
+    code += "\nconst kTileSize : u32 = " + std::to_string(kTileSize) + ";\n";
+    code += "\nconst is_b_f16 : bool = " + is_f16_str + ";\n";
+    if (is_f16) {
+        code += R"(
+        @group(0) @binding(0) var<storage,read> a : array<f32>; // [M, K]
+        @group(0) @binding(1) var<storage,read> b : array<u32>; // [K, N] (f16)
+        @group(0) @binding(2) var<storage,read_write> c : array<f32>;
+        )";
+    } else {
+        code += R"(
+        @group(0) @binding(0) var<storage,read> a : array<f32>; // [M, K]
+        @group(0) @binding(1) var<storage,read> b : array<f32>; // [K, N]
+        @group(0) @binding(2) var<storage,read_write> c : array<f32>;
+        )";
+    }
+    code += std::string(wgsl_fp16_to_fp32);
+    code += std::string(wgsl_vector_mat_mul_split_transpose_header);
+    if (useDimsFromUniforms) {
+        code += R"(
+          let R = uniforms.B_M;
+          let C = uniforms.B_N;
+          )";
+    } else {
+        code += "\nlet R : u32 = " + std::to_string(rows) + ";\n";
+        code += "\nlet C : u32 = " + std::to_string(cols) + ";\n";
+    }
+    code += std::string(wgsl_vector_mat_mul_split_transpose_body);
+    ComputePipeline pipeline = 
+        create_compute_pipeline(device, code.c_str(), bglEntries, label);
+    
+    store_pipeline_validation(pipeline, &A, &B, &C);
+
+    return pipeline;
+}
+
+// TODO Need another pass that combines the split results. We have a separate
+//      function for this to avoid having to switch pipelines during heavy
+//      parallel computation.
+// TODO Prep a split buffer. WebGPU doesn't support buffers larger than 256 MB.
+//      There is one buffer that is. So we should accomodate.
+CommandBuffer cmdbuf_vector_mat_mul_split_trans(
+        WGPUDevice device,
+        WGPUCommandEncoder encoder,     // Optional (use nullptr)
+        WGPUComputePassEncoder pass,    // Optional (use nullptr - takes precedence over encoder)
+        ComputePipeline* pipeline,
+        const TensorBuffer& A,
+        const TensorBuffer& B,
+        const TensorBuffer& C,
+        const std::vector<TensorBuffer*>& scratchBuffers,
+        // int32_t numSplits, // By default the number of splits is two.
+        int64_t aOffset,
+        const std::vector<WGPUBuffer>& splitBuffers,
+        bool useDimsFromUniforms)
+{
+    if (!validate_vector_mat_mul_split_trans(A, B, C, scratchBuffers)) {
+        return {};
+    }
+    
+    assert(scratchBuffers.size() >= splitBuffers.size() - 1);
+
+    // The following allows construction of pipelines and avoids high-level code duplication.
+    ComputePipeline pipelineTemp{}; // Memory of this local variable is referenced throughout the function.
+    if (!pipeline || !pipeline->is_valid()) {
+        pipelineTemp = pipeline_vector_mat_mul_split_trans(device, A, B, C, scratchBuffers, splitBuffers.size(), useDimsFromUniforms);
+        if (pipeline && pipeline->buildPipelineFlag) {
+            *pipeline = std::move(pipelineTemp);
+            return {};
+        }
+        pipeline = &pipelineTemp;
+    } else {
+      if (!validate_pipeline(*pipeline, &A, &B, &C)) {
+          printf("Pipeline shapes not equal to input shapes.\n");
+          assert(false);
+          return {};
+      }
+    }
+
+
+    int64_t rows = B.shape.r;
+    int64_t cols = B.shape.c;
+
+    CommandBuffer out{};
+
+    std::vector<std::vector<WGPUBindGroupEntry>> bgEntriesSplit;
+    for (int i = 0; i < splitBuffers.size(); ++i) {
+        bgEntriesSplit.push_back({
+          WGPUBindGroupEntry{
+            .binding = 0,
+            .buffer = A.gpu,
+            .offset = uint64_t(aOffset),
+            .size = uint64_t(cols * get_TensorType_size(A.type)), // Only want one row of A.
+          },
+          WGPUBindGroupEntry{
+            .binding = 1,
+            .buffer = B.gpu,
+            .offset = 0,
+            .size = (uint32_t)B.get_size_bytes(),
+          },
+          WGPUBindGroupEntry{
+            .binding = 2,
+            .buffer = (i == 0) ? C.gpu : scratchBuffers[i-1]->gpu,
+            .offset = 0,
+            .size = (uint32_t)C.get_size_bytes(),
+          },
+          WGPUBindGroupEntry{
+            .binding = 3,
+            .buffer = splitBuffers[i],
+            .offset = 0,
+            .size = kLlamaUniformsSize,
+          },
+        });
+    }
+
+    int64_t workgroupsX = rows;
+    int64_t workgroupsY = 1;
+    int64_t workgroupsZ = A.shape.b == 0 ? 1: A.shape.b;
+
+    bool hasEncoder = (encoder != nullptr);
+    bool hasPass = (pass != nullptr);
+    if (!hasEncoder && !hasPass) {
+        encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
+    }
+    if (!hasPass) {
+        pass = wgpuCommandEncoderBeginComputePass(encoder, nullptr);
+    }
+
+    wgpuComputePassEncoderSetPipeline(pass, pipeline->pipeline);
+
+    for (int i = 0; i < splitBuffers.size(); ++i) {
+        WGPUBindGroupDescriptor bgDescSplit1 = {
+                                  .layout     = pipeline->bindGroupLayout,
+                                  .entryCount = (uint32_t)bgEntriesSplit[i].size(),
+                                  .entries    = bgEntriesSplit[i].data(),
+                  };
+
+        WGPUBindGroup bindGroup1 = wgpuDeviceCreateBindGroup(device, &bgDescSplit1);
+
+        // TODO Should be based on numSplits
+        wgpuComputePassEncoderSetBindGroup(pass, 0, bindGroup1, 0, nullptr);
+        wgpuComputePassEncoderDispatchWorkgroups(pass, workgroupsX, workgroupsY, workgroupsZ);
+          
+        wgpuBindGroupRelease(bindGroup1);
+    }
+
+    if (!hasPass) {
+        wgpuComputePassEncoderEnd(pass);
+        wgpuComputePassEncoderRelease(pass); // There is a question whether we should release before building command buffer.
+    }
+    if (!hasEncoder && !hasPass) {
+        out.cmdBuffer = wgpuCommandEncoderFinish(encoder, nullptr);
+        wgpuCommandEncoderRelease(encoder);
+    }
+
+    return out;
+}
+
+
+static const char* wgsl_vector_multi_mat_mul_split_transpose_header = R"(
+struct Uniforms {
+    A_B : u32,
+    A_M : u32,
+    A_N : u32,
+    split : u32, // Split 0, 1, 2, 3
+    B_B : u32,
+    B_M : u32,
+    B_N : u32,
+    totalSplits : u32 // Total number of splits
+};
+@group(0) @binding(3) var<uniform> uniforms : Uniforms;
+
+var<workgroup> mshare : array<f32,kWorkgroupSize>;
+
+@compute @workgroup_size(kWorkgroupSize, 1u, 1u)
+fn main(
+  @builtin(workgroup_id) wid : vec3<u32>,
+  @builtin(local_invocation_id) lid : vec3<u32>
+)
+{
+)";
+static const char* wgsl_vector_multi_mat_mul_split_transpose_body = R"(
+  var bs : u32 = 1;
+  if (is_b_f16) { bs = 2; }
+
+  let C_splt = C / uniforms.totalSplits;
+  let C_orig = C;
+
+  let matStrideA : u32 = 1 * C_orig * wid.z;
+  let matStrideB : u32 = R * C_splt * wid.z;
+  let matStrideO : u32 = 1 * R * wid.z;
+  
+  let bSplitSize : u32 = C_orig / uniforms.totalSplits;
+  let bColOff : u32 = uniforms.split * bSplitSize;
+
+  //               batch           col
+  let aIndex = matStrideA + lid.x*kTileSize  + bColOff;
+  let bIndex = matStrideB + lid.x*kTileSize  + wid.x*C_splt;
+  let cIndex = matStrideO + wid.x;
+
+  let si = lid.x;
+
+  var sum : f32 = 0.0;
+  for (var i : u32 = 0; i < kTileSize; i = i + 1) {
+    if (is_b_f16) {
+      let f16_part = (bIndex + i) % 2;
+      let b = compute_fp16_to_fp32(u32(b[(bIndex + i)/bs]), f16_part);
+      sum = sum + a[aIndex + i] * b;
+    } else {
+      sum = sum + a[aIndex + i] * f32(b[bIndex + i]);
+    }
+  }
+
+  mshare[si] = sum;
+
+  workgroupBarrier();
+  
+  for (var stride : u32 = kWorkgroupSize / 2; stride > 0; stride = stride / 2) {
+    if (lid.x < stride) {
+      mshare[si] = mshare[si] + mshare[si+stride];
+    }
+    workgroupBarrier();
+  }
+
+  if (lid.x == 0) {
+    //c[cIndex] = f32(uniforms.split);//mshare[si];
+    c[cIndex] = mshare[si];
+  }
+}
+)";
+
+static bool validate_vector_multi_mat_mul_split_trans(
+        const TensorBuffer& A,
+        const std::vector<TensorBuffer*>& B,
+        const TensorBuffer& C,
+        const std::vector<TensorBuffer*>& scratchBuffers,
+        int numSplits) {
+    if (B.size() != numSplits) {
+        fprintf(stderr, "create_vector_multi_mat_mul_trans: Expected B array to equal numSplits\n");
+        assert(false);
+        return false;
+    }
+
+    for (TensorBuffer* buffer1 : B) {
+        if (buffer1 == nullptr || buffer1->gpu == nullptr) {
+            fprintf(stderr, "create_vector_multi_mat_mul_trans: Encountered an empty gpu buffer\n");
+            assert(false);
+            return false;
+        }
+    }
+
+    if (A.type != TensorType_F32) {
+        fprintf(stderr, "create_vector_multi_mat_mul_trans: A.type != TensorType_F32\n");
+        assert(false);
+        return false;
+    }
+
+    if (!(B[0]->type == TensorType_F32 || B[0]->type == TensorType_F16)) {
+        fprintf(stderr, "create_vector_multi_mat_mul_trans: B.type != TensorType_F32 or TensorType_F16\n");
+        assert(false);
+        return false;
+    }
+
+    if (C.type != TensorType_F32) {
+        fprintf(stderr, "create_vector_multi_mat_mul_trans: C.type != TensorType_F32\n");
+        assert(false);
+        return false;
+    }
+
+    if (A.shape.c != B[0]->shape.c * numSplits) {
+        fprintf(stderr, "create_vector_multi_mat_mul_trans: Expecting number of columns in A to match B\n");
+        assert(false);
+        return false;
+    }
+    
+    if (B[0]->shape.r == 0 || B[0]->shape.c == 0) {
+        printf("create_vector_multi_mat_mul_trans: one of the dimensions of B is zero.\n");
+        assert(false);
+        return false;
+    }
+
+    if (A.shape.b > 1) {
+        if (A.shape.b != B[0]->shape.b) {
+            printf("create_vector_multi_mat_mul_trans: A.shape.b != B.shape.b\n");
+            assert(false);
+            return false;
+        }
+
+        if (A.shape.b != C.shape.b) {
+            printf("create_vector_multi_mat_mul_trans: A.shape.b != C.shape.b\n");
+            assert(false);
+            return false;
+        }
+    }
+
+    if (C.shape.c != B[0]->shape.r) { // Inverted from what we would expect as we are performing a transpose.
+        printf("C's number of columns do not match B's\n");
+        assert(false);
+        return false;
+    }
+    
+    //for (TensorBuffer* buffer : scratchBuffers) {
+    //    if (C.shape != buffer->shape) {
+    //        printf("C.shape != CScratch.shape\n");
+    //        assert(false);
+    //        return false;
+    //    }
+    //}
+
+    return true;
+}
+
+
+static ComputePipeline pipeline_vector_multi_mat_mul_split_trans(
+        WGPUDevice device,
+        const TensorBuffer& A,
+        const std::vector<TensorBuffer*> B,
+        const TensorBuffer& C,
+        const std::vector<TensorBuffer*>& scratchBuffers,
+        int numSplits,
+        bool useDimsFromUniforms) {
+    // Computing pipeline for vector x matrix.
+    if (!validate_vector_multi_mat_mul_split_trans(A, B, C, scratchBuffers, numSplits)) {
+        return {};
+    }
+
+    const char* label = "vector_mat_mul_split";
+
+    std::vector<WGPUBindGroupLayoutEntry> bglEntries = {
+        WGPUBindGroupLayoutEntry{
+            .binding = 0,
+            .visibility = WGPUShaderStage_Compute,
+            .buffer = WGPUBufferBindingLayout{
+              .type = WGPUBufferBindingType_ReadOnlyStorage,
+              .hasDynamicOffset = false,
+            },
+        },
+        WGPUBindGroupLayoutEntry{
+            .binding = 1,
+            .visibility = WGPUShaderStage_Compute,
+            .buffer = WGPUBufferBindingLayout{
+              .type = WGPUBufferBindingType_ReadOnlyStorage,
+              .hasDynamicOffset = false,
+            },
+        },
+        WGPUBindGroupLayoutEntry{
+            .binding = 2,
+            .visibility = WGPUShaderStage_Compute,
+            .buffer = WGPUBufferBindingLayout{
+              .type = WGPUBufferBindingType_Storage,
+              .hasDynamicOffset = false,
+            },
+        },
+        WGPUBindGroupLayoutEntry{
+            .binding = 3,
+            .visibility = WGPUShaderStage_Compute,
+            .buffer = WGPUBufferBindingLayout{
+              .type = WGPUBufferBindingType_Uniform,
+              .hasDynamicOffset = false,
+            },
+        },
+    };
+    
+    int64_t rows = B[0]->shape.r;
+    int64_t cols = B[0]->shape.c * numSplits;
+
+    assert(cols == A.shape.c);
+
+    // Note workgroup size (gWorkgroupX*gWorkgroupY) shouldn't exceed 256.
+    const int64_t kWorkgroupSize = 256;
+
+    if ((cols / numSplits) < kWorkgroupSize) {
+        printf("A columns is less than kWorkgroupSize cols:%d numSplits:%d kWorkgroupSize:%d\n", cols, numSplits, kWorkgroupSize);
+
+        assert(false);
+        return {};
+    }
+
+    if (((cols / numSplits) % kWorkgroupSize) != 0) {
+        printf("A is not a multiple of kWorkgroupSize\n");
+        assert(false);
+        return {};
+    }
+
+    const int64_t kTileSize = (cols / numSplits) / kWorkgroupSize; // 1
+
+    bool is_f16 = (B[0]->type == TensorType_F16);
+    std::string is_f16_str = "false";
+    if (is_f16) { is_f16_str = "true"; }
+
+
+    printf("STATS: %d %d %d %d f16:%d\n", kTileSize, cols, numSplits, kWorkgroupSize, is_f16);
+    
+    // TODO:  Use uniform buffers for the ability to change sizes of input matrices.
+    //        We shouldn't recreate pipelines.
+    // Add embedding dims.
+    std::string code = "";
+    code += "\nconst kWorkgroupSize : u32 = " + std::to_string(kWorkgroupSize) + ";\n";
+    code += "\nconst kTileSize : u32 = " + std::to_string(kTileSize) + ";\n";
+    code += "\nconst is_b_f16 : bool = " + is_f16_str + ";\n";
+    if (is_f16) {
+        code += R"(
+        @group(0) @binding(0) var<storage,read> a : array<f32>; // [M, K]
+        @group(0) @binding(1) var<storage,read> b : array<u32>; // [K, N] (f16)
+        @group(0) @binding(2) var<storage,read_write> c : array<f32>;
+        )";
+    } else {
+        code += R"(
+        @group(0) @binding(0) var<storage,read> a : array<f32>; // [M, K]
+        @group(0) @binding(1) var<storage,read> b : array<f32>; // [K, N]
+        @group(0) @binding(2) var<storage,read_write> c : array<f32>;
+        )";
+    }
+    code += std::string(wgsl_fp16_to_fp32);
+    code += std::string(wgsl_vector_multi_mat_mul_split_transpose_header);
+    if (useDimsFromUniforms) {
+        code += R"(
+          let R = uniforms.B_M;
+          let C = uniforms.B_N;
+          )";
+    } else {
+        code += "\nlet R : u32 = " + std::to_string(rows) + ";\n";
+        code += "\nlet C : u32 = " + std::to_string(cols) + ";\n";
+    }
+    code += std::string(wgsl_vector_multi_mat_mul_split_transpose_body);
+    ComputePipeline pipeline = 
+        create_compute_pipeline(device, code.c_str(), bglEntries, label);
+    
+    store_pipeline_validation(pipeline, &A, B[0], &C);
+
+    return pipeline;
+}
+
+// TODO Need another pass that combines the split results. We have a separate
+//      function for this to avoid having to switch pipelines during heavy
+//      parallel computation.
+// TODO Prep a split buffer. WebGPU doesn't support buffers larger than 256 MB.
+//      There is one buffer that is. So we should accomodate.
+CommandBuffer cmdbuf_vector_multi_mat_mul_split_trans(
+        WGPUDevice device,
+        WGPUCommandEncoder encoder,     // Optional (use nullptr)
+        WGPUComputePassEncoder pass,    // Optional (use nullptr - takes precedence over encoder)
+        ComputePipeline* pipeline,
+        const TensorBuffer& A,
+        const std::vector<TensorBuffer*> B,
+        const TensorBuffer& C,
+        const std::vector<TensorBuffer*>& scratchBuffers,
+        // int32_t numSplits, // By default the number of splits is two.
+        int64_t aOffset,
+        const std::vector<WGPUBuffer>& splitBuffers,
+        bool useDimsFromUniforms)
+{
+    int32_t numSplits = splitBuffers.size();
+    if (!validate_vector_multi_mat_mul_split_trans(A, B, C, scratchBuffers, numSplits)) {
+        return {};
+    }
+    
+    assert(scratchBuffers.size() >= splitBuffers.size() - 1);
+
+    // The following allows construction of pipelines and avoids high-level code duplication.
+    ComputePipeline pipelineTemp{}; // Memory of this local variable is referenced throughout the function.
+    if (!pipeline || !pipeline->is_valid()) {
+        pipelineTemp = pipeline_vector_multi_mat_mul_split_trans(device, A, B, C, scratchBuffers, numSplits, useDimsFromUniforms);
+        if (pipeline && pipeline->buildPipelineFlag) {
+            *pipeline = std::move(pipelineTemp);
+            return {};
+        }
+        pipeline = &pipelineTemp;
+    } else {
+      if (!validate_pipeline(*pipeline, &A, B[0], &C)) {
+          printf("Pipeline shapes not equal to input shapes.\n");
+          assert(false);
+          return {};
+      }
+    }
+
+
+    int64_t rows = B[0]->shape.r;
+    int64_t cols = B[0]->shape.c * numSplits;
+
+    assert(cols == A.shape.c);
+
+    CommandBuffer out{};
+
+    std::vector<std::vector<WGPUBindGroupEntry>> bgEntriesSplit;
+    for (int i = 0; i < splitBuffers.size(); ++i) {
+        bgEntriesSplit.push_back({
+          WGPUBindGroupEntry{
+            .binding = 0,
+            .buffer = A.gpu,
+            .offset = uint64_t(aOffset),
+            .size = uint64_t(cols * get_TensorType_size(A.type)), // Only want one row of A.
+          },
+          WGPUBindGroupEntry{
+            .binding = 1,
+            .buffer = B[i]->gpu,
+            .offset = 0,
+            .size = (uint32_t)B[i]->get_size_bytes(),
+          },
+          WGPUBindGroupEntry{
+            .binding = 2,
+            .buffer = (i == 0) ? C.gpu : scratchBuffers[i-1]->gpu,
+            .offset = 0,
+            .size = (uint32_t)C.get_size_bytes(),
+          },
+          WGPUBindGroupEntry{
+            .binding = 3,
+            .buffer = splitBuffers[i],
+            .offset = 0,
+            .size = kLlamaUniformsSize,
+          },
+        });
+    }
+
+    int64_t workgroupsX = rows;
+    int64_t workgroupsY = 1;
+    int64_t workgroupsZ = A.shape.b == 0 ? 1: A.shape.b;
+
+    bool hasEncoder = (encoder != nullptr);
+    bool hasPass = (pass != nullptr);
+    if (!hasEncoder && !hasPass) {
+        encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
+    }
+    if (!hasPass) {
+        pass = wgpuCommandEncoderBeginComputePass(encoder, nullptr);
+    }
+
+    wgpuComputePassEncoderSetPipeline(pass, pipeline->pipeline);
+
+    for (int i = 0; i < splitBuffers.size(); ++i) {
+        WGPUBindGroupDescriptor bgDescSplit1 = {
+                                  .layout     = pipeline->bindGroupLayout,
+                                  .entryCount = (uint32_t)bgEntriesSplit[i].size(),
+                                  .entries    = bgEntriesSplit[i].data(),
+                  };
+
+        WGPUBindGroup bindGroup1 = wgpuDeviceCreateBindGroup(device, &bgDescSplit1);
+
+        // TODO Should be based on numSplits
+        wgpuComputePassEncoderSetBindGroup(pass, 0, bindGroup1, 0, nullptr);
+        wgpuComputePassEncoderDispatchWorkgroups(pass, workgroupsX, workgroupsY, workgroupsZ);
+          
+        wgpuBindGroupRelease(bindGroup1);
+    }
+
+    if (!hasPass) {
+        wgpuComputePassEncoderEnd(pass);
+        wgpuComputePassEncoderRelease(pass); // There is a question whether we should release before building command buffer.
+    }
+    if (!hasEncoder && !hasPass) {
+        out.cmdBuffer = wgpuCommandEncoderFinish(encoder, nullptr);
+        wgpuCommandEncoderRelease(encoder);
+    }
+
+    return out;
+}
+
+static const char* wgsl_vector_reduce = R"(
+
+fn isOutOfBounds(rows : u32, cols : u32, x : u32, y : u32) -> bool {
+  return (x >= cols || y >= rows);
+}
+
+@compute @workgroup_size(kWorkgroupSize, 1u, 1u)
+fn main(
+  @builtin(workgroup_id) wid : vec3<u32>,
+  @builtin(local_invocation_id) lid : vec3<u32>
+)
+{
+  let matStrideA : u32 = 1 * C * wid.z;
+  let matStrideB : u32 = 1 * C * wid.z;
+
+  //let bSplitSize : u32 = C / numSplits;
+  let bColOff : u32 = wid.x * splitSize;
+
+  let xIndex = lid.x*kTileSize + bColOff;
+  
+  //               batch           col
+  let aIndex = matStrideA + xIndex;
+  let bIndex = matStrideB + xIndex;
+
+  var sum : f32 = 0.0;
+  for (var i : u32 = 0; i < kTileSize; i = i + 1) {
+    if (!isOutOfBounds(1,C,xIndex + i,0)) {
+        a[aIndex + i] = a[aIndex + i] + b[bIndex + i];
+    }
+  }
+}
+)";
+
+static bool validate_vector_reduce(
+        const TensorBuffer& A,
+        const TensorBuffer& B) {
+    if (A.shape != B.shape) {
+        printf("C.shape != CScratch.shape\n");
+        assert(false);
+        return false;
+    }
+    
+    return true;
+}
+
+static ComputePipeline pipeline_vector_reduce(
+        WGPUDevice device,
+        const TensorBuffer& A,
+        const TensorBuffer& B,
+        int numSplits) {
+    // Computing pipeline for vector x matrix.
+    if (!validate_vector_reduce(A, B)) {
+        return {};
+    }
+
+    const char* label = "vector_reduce";
+
+    std::vector<WGPUBindGroupLayoutEntry> bglEntries = {
+        WGPUBindGroupLayoutEntry{
+            .binding = 0,
+            .visibility = WGPUShaderStage_Compute,
+            .buffer = WGPUBufferBindingLayout{
+              .type = WGPUBufferBindingType_Storage,
+              .hasDynamicOffset = false,
+            },
+        },
+        WGPUBindGroupLayoutEntry{
+            .binding = 1,
+            .visibility = WGPUShaderStage_Compute,
+            .buffer = WGPUBufferBindingLayout{
+              .type = WGPUBufferBindingType_ReadOnlyStorage,
+              .hasDynamicOffset = false,
+            },
+        },
+    };
+    
+    int64_t cols = B.shape.c;
+
+    const int64_t kWorkgroupSize = 256;
+    int64_t kTileSize = (cols / numSplits) / kWorkgroupSize; // 1
+    if (kTileSize == 0) {
+        kTileSize = 1;
+    }
+    //printf("kTileSize: %d\n", kTileSize);
+    //printf("numSplits: %d\n", numSplits);
+    //printf("cols: %d\n", cols);
+    //printf("Split size: %d\n", cols/numSplits);
+
+    // Note workgroup size (gWorkgroupX*gWorkgroupY) shouldn't exceed 256.
+
+    bool is_f16 = (B.type == TensorType_F16);
+    std::string is_f16_str = "false";
+    if (is_f16) { is_f16_str = "true"; }
+    
+    assert(!is_f16); // Not tested.
+    
+    // TODO:  Use uniform buffers for the ability to change sizes of input matrices.
+    //        We shouldn't recreate pipelines.
+    // Add embedding dims.
+    std::string code = "";
+    code += "\nconst numSplits : u32 = " + std::to_string(numSplits) + ";\n";
+    code += "\nconst splitSize : u32 = " + std::to_string(cols/numSplits) + ";\n";
+    code += "\nconst C : u32 = " + std::to_string(cols) + ";\n";
+    code += "\nconst kWorkgroupSize : u32 = " + std::to_string(kWorkgroupSize) + ";\n";
+    code += "\nconst kTileSize : u32 = " + std::to_string(kTileSize) + ";\n";
+    code += "\nconst is_b_f16 : bool = " + is_f16_str + ";\n";
+    if (is_f16) {
+        code += R"(
+        @group(0) @binding(0) var<storage,read_write> a : array<f32>; // [M, K]
+        @group(0) @binding(1) var<storage,read> b : array<u32>; // [K, N] (f16)
+        )";
+    } else {
+        code += R"(
+        @group(0) @binding(0) var<storage,read_write> a : array<f32>; // [M, K]
+        @group(0) @binding(1) var<storage,read> b : array<f32>; // [K, N]
+        )";
+    }
+    code += std::string(wgsl_fp16_to_fp32);
+    code += std::string(wgsl_vector_reduce);
+    ComputePipeline pipeline = 
+        create_compute_pipeline(device, code.c_str(), bglEntries, label);
+    
+    store_pipeline_validation(pipeline, &A, &B);
+
+    return pipeline;
+}
+
+
+CommandBuffer cmdbuf_vector_reduce(
+        WGPUDevice device,
+        WGPUCommandEncoder encoder,     // Optional (use nullptr)
+        WGPUComputePassEncoder pass,    // Optional (use nullptr - takes precedence over encoder)
+        ComputePipeline* pipeline,
+        const TensorBuffer& A, // OUT
+        const TensorBuffer& B,
+        int numSplits) {
+    if (!validate_vector_reduce(A, B)) {
+        return {};
+    }
+
+    // The following allows construction of pipelines and avoids high-level code duplication.
+    ComputePipeline pipelineTemp{}; // Memory of this local variable is referenced throughout the function.
+    if (!pipeline || !pipeline->is_valid()) {
+        pipelineTemp = pipeline_vector_reduce(device, A, B, numSplits);
+        if (pipeline && pipeline->buildPipelineFlag) {
+            *pipeline = std::move(pipelineTemp);
+            return {};
+        }
+        pipeline = &pipelineTemp;
+    } else {
+      if (!validate_pipeline(*pipeline, &A, &B)) {
+          printf("Pipeline shapes not equal to input shapes.\n");
+          assert(false);
+          return {};
+      }
+    }
+
+    int64_t rows = B.shape.r;
+    int64_t cols = B.shape.c;
+
+    CommandBuffer out{};
+
+    std::vector<WGPUBindGroupEntry> bgEntriesSplit = {
+      WGPUBindGroupEntry{
+        .binding = 0,
+        .buffer = A.gpu,
+        .offset = 0,
+        .size = (uint32_t)A.get_size_bytes(), // Only want one row of A.
+      },
+      WGPUBindGroupEntry{
+        .binding = 1,
+        .buffer = B.gpu,
+        .offset = 0,
+        .size = (uint32_t)B.get_size_bytes(),
+      },
+    };
+    WGPUBindGroupDescriptor bgDesc = {
+                              .layout     = pipeline->bindGroupLayout,
+                              .entryCount = (uint32_t)bgEntriesSplit.size(),
+                              .entries    = bgEntriesSplit.data(),
+              };
+
+    WGPUBindGroup bindGroup = wgpuDeviceCreateBindGroup(device, &bgDesc);
+
+    int64_t workgroupsX = numSplits;
+    int64_t workgroupsY = 1;
+    int64_t workgroupsZ = A.shape.b == 0 ? 1: A.shape.b;
+
+    bool hasEncoder = (encoder != nullptr);
+    bool hasPass = (pass != nullptr);
+    if (!hasEncoder && !hasPass) {
+        encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
+    }
+    if (!hasPass) {
+        pass = wgpuCommandEncoderBeginComputePass(encoder, nullptr);
+    }
+
+    wgpuComputePassEncoderSetPipeline(pass, pipeline->pipeline);
+    wgpuComputePassEncoderSetBindGroup(pass, 0, bindGroup, 0, nullptr);
+    wgpuComputePassEncoderDispatchWorkgroups(pass, workgroupsX, workgroupsY, workgroupsZ);
+
+    if (!hasPass) {
+        wgpuComputePassEncoderEnd(pass);
+        wgpuComputePassEncoderRelease(pass); // There is a question whether we should release before building command buffer.
+    }
+    if (!hasEncoder && !hasPass) {
+        out.cmdBuffer = wgpuCommandEncoderFinish(encoder, nullptr);
+        wgpuCommandEncoderRelease(encoder);
+    }
+    
+    wgpuBindGroupRelease(bindGroup);
+
+    return out;
+}
+
+static const char* wgsl_f16_f32_conversion = R"(
+@group(0) @binding(0) var<storage,read_write> a : array<f32>; // [M, K]
+@group(0) @binding(1) var<storage,read> b : array<u32>; // [K, N] (f16)
+
+fn isOutOfBounds(rows : u32, cols : u32, x : u32, y : u32) -> bool {
+  return (x >= cols || y >= rows);
+}
+
+@compute @workgroup_size(kWorkgroupSize, 1u, 1u)
+fn main(
+  @builtin(workgroup_id) wid : vec3<u32>,
+  @builtin(local_invocation_id) lid : vec3<u32>
+)
+{
+  let bs : u32 = 2;
+
+  let matStrideA : u32 = 1 * C * wid.z;
+  let matStrideB : u32 = 1 * C * wid.z;
+
+  let bColOff : u32 = wid.x * splitSize;
+
+  let xIndex = lid.x*kTileSize + bColOff;
+  
+  //               batch           col
+  let aIndex = matStrideA + xIndex;
+  let bIndex = matStrideB + xIndex;
+
+  var sum : f32 = 0.0;
+  for (var i : u32 = 0; i < kTileSize; i = i + 1) {
+    if (!isOutOfBounds(1,C,xIndex + i,0)) {
+        let f16_part = (bIndex + i) % 2;
+        let b = compute_fp16_to_fp32(u32(b[(bIndex + i)/bs]), f16_part);
+        a[aIndex + i] = b;
+    }
+  }
+}
+)";
+
+static bool validate_f16_f32_conversion(
+        const TensorBuffer& A,
+        const TensorBuffer& B) {
+    if (A.shape.c != B.shape.c) {
+        printf("A.shape.c != B.shape.c\n");
+        assert(false);
+        return false;
+    }
+
+    if (A.type == B.type) {
+        printf("Expected A and B to be different types\n");
+        assert(false);
+        return false;
+    }
+
+    if (!( A.type == TensorType_F32 || A.type == TensorType_F16)) {
+        printf("A must be either F16 or F32\n");
+        assert(false);
+        return false;
+    }
+
+    if (!( B.type == TensorType_F32 || B.type == TensorType_F16)) {
+        printf("B must be either F16 or F32\n");
+        assert(false);
+        return false;
+    }
+
+    return true;
+}
+
+static ComputePipeline pipeline_f16_f32_conversion(
+        WGPUDevice device,
+        const TensorBuffer& A,
+        const TensorBuffer& B,
+        int numSplits) {
+    // Computing pipeline for vector x matrix.
+    if (!validate_f16_f32_conversion(A, B)) {
+        return {};
+    }
+
+    const char* label = "f16_f32_conversion";
+
+    std::vector<WGPUBindGroupLayoutEntry> bglEntries = {
+        WGPUBindGroupLayoutEntry{
+            .binding = 0,
+            .visibility = WGPUShaderStage_Compute,
+            .buffer = WGPUBufferBindingLayout{
+              .type = WGPUBufferBindingType_Storage,
+              .hasDynamicOffset = false,
+            },
+        },
+        WGPUBindGroupLayoutEntry{
+            .binding = 1,
+            .visibility = WGPUShaderStage_Compute,
+            .buffer = WGPUBufferBindingLayout{
+              .type = WGPUBufferBindingType_ReadOnlyStorage,
+              .hasDynamicOffset = false,
+            },
+        },
+    };
+    
+    int64_t cols = B.shape.c;
+
+    const int64_t kWorkgroupSize = 256;
+    int64_t kTileSize = (cols / numSplits) / kWorkgroupSize; // 1
+    if (kTileSize == 0) {
+        kTileSize = 1;
+    }
+    //printf("kTileSize: %d\n", kTileSize);
+    //printf("numSplits: %d\n", numSplits);
+    //printf("cols: %d\n", cols);
+    //printf("Split size: %d\n", cols/numSplits);
+
+    // Note workgroup size (gWorkgroupX*gWorkgroupY) shouldn't exceed 256.
+    
+    assert(B.type == TensorType_F16); // Not tested.
+    
+    // TODO:  Use uniform buffers for the ability to change sizes of input matrices.
+    //        We shouldn't recreate pipelines.
+    // Add embedding dims.
+    std::string code = "";
+    code += "\nconst numSplits : u32 = " + std::to_string(numSplits) + ";\n";
+    code += "\nconst splitSize : u32 = " + std::to_string(cols/numSplits) + ";\n";
+    code += "\nconst C : u32 = " + std::to_string(cols) + ";\n";
+    code += "\nconst kWorkgroupSize : u32 = " + std::to_string(kWorkgroupSize) + ";\n";
+    code += "\nconst kTileSize : u32 = " + std::to_string(kTileSize) + ";\n";
+    code += std::string(wgsl_fp16_to_fp32);
+    code += std::string(wgsl_f16_f32_conversion);
+    ComputePipeline pipeline = 
+        create_compute_pipeline(device, code.c_str(), bglEntries, label);
+    
+    store_pipeline_validation(pipeline, &A, &B);
+
+    return pipeline;
+}
+
+
+CommandBuffer cmdbuf_f16_f32_conversion(
+        WGPUDevice device,
+        WGPUCommandEncoder encoder,     // Optional (use nullptr)
+        WGPUComputePassEncoder pass,    // Optional (use nullptr - takes precedence over encoder)
+        ComputePipeline* pipeline,
+        const TensorBuffer& A, // OUT
+        const TensorBuffer& B,
+        int numSplits,
+        int aOffset,
+        int bOffset) {
+    if (!validate_f16_f32_conversion(A, B)) {
+        return {};
+    }
+
+    // The following allows construction of pipelines and avoids high-level code duplication.
+    ComputePipeline pipelineTemp{}; // Memory of this local variable is referenced throughout the function.
+    if (!pipeline || !pipeline->is_valid()) {
+        pipelineTemp = pipeline_f16_f32_conversion(device, A, B, numSplits);
+        if (pipeline && pipeline->buildPipelineFlag) {
+            *pipeline = std::move(pipelineTemp);
+            return {};
+        }
+        pipeline = &pipelineTemp;
+    } else {
+      if (!validate_pipeline(*pipeline, &A, &B)) {
+          printf("Pipeline shapes not equal to input shapes.\n");
+          assert(false);
+          return {};
+      }
+    }
+
+    int64_t rows = B.shape.r;
+    int64_t cols = B.shape.c;
+
+    CommandBuffer out{};
+
+    std::vector<WGPUBindGroupEntry> bgEntriesSplit = {
+      WGPUBindGroupEntry{
+        .binding = 0,
+        .buffer = A.gpu,
+        .offset = uint64_t(aOffset),
+        .size = uint64_t(A.shape.c * get_TensorType_size(A.type)),
+      },
+      WGPUBindGroupEntry{
+        .binding = 1,
+        .buffer = B.gpu,
+        .offset = uint64_t(bOffset),
+        .size = uint64_t(B.shape.c * get_TensorType_size(B.type)),
+      },
+    };
+    WGPUBindGroupDescriptor bgDesc = {
+                              .layout     = pipeline->bindGroupLayout,
+                              .entryCount = (uint32_t)bgEntriesSplit.size(),
+                              .entries    = bgEntriesSplit.data(),
+              };
+
+    WGPUBindGroup bindGroup = wgpuDeviceCreateBindGroup(device, &bgDesc);
+
+    int64_t workgroupsX = numSplits;
+    int64_t workgroupsY = 1;
+    int64_t workgroupsZ = A.shape.b == 0 ? 1: A.shape.b;
+
+    bool hasEncoder = (encoder != nullptr);
+    bool hasPass = (pass != nullptr);
+    if (!hasEncoder && !hasPass) {
+        encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
+    }
+    if (!hasPass) {
+        pass = wgpuCommandEncoderBeginComputePass(encoder, nullptr);
+    }
+
+    wgpuComputePassEncoderSetPipeline(pass, pipeline->pipeline);
+    wgpuComputePassEncoderSetBindGroup(pass, 0, bindGroup, 0, nullptr);
+    wgpuComputePassEncoderDispatchWorkgroups(pass, workgroupsX, workgroupsY, workgroupsZ);
+
+    if (!hasPass) {
+        wgpuComputePassEncoderEnd(pass);
+        wgpuComputePassEncoderRelease(pass); // There is a question whether we should release before building command buffer.
+    }
+    if (!hasEncoder && !hasPass) {
+        out.cmdBuffer = wgpuCommandEncoderFinish(encoder, nullptr);
+        wgpuCommandEncoderRelease(encoder);
+    }
+    
+    wgpuBindGroupRelease(bindGroup);
+
+    return out;
+}
 
 } // namespace th
