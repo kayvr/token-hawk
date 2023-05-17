@@ -1,23 +1,22 @@
 # TokenHawk
 
-[LLaMA](https://arxiv.org/abs/2302.13971) inference using hand-written WebGPU code.
+Hand-written [LLaMA](https://arxiv.org/abs/2302.13971) inference using WebGPU.
+
+TokenHawk is very new. Time will be needed to get to feature parity. Please see the limitations section.
 
 # Description
 
-TokenHawk uses WebGPU to perform Llama inference. All code is written by hand and there are two files:
+WebGPU powers TokenHawk's LLM inference. There are three core files:
 
-* th.cpp - Contains GPU shaders to support running LLMs.
+* th.cpp - Provides GPU support for running LLMs.
 * th-llama.cpp - GPU implementation of llama.
+* th-llama-loader.cpp - Routines to load model files.
 
-The command line version of TokenHawk is native C++ code. It statically links to Google's C++ WebGPU library which makes profiling and debuging simpler.
+Native C++ is used for command line (CLI) TokenHawk. This CLI version statically links Google's C++ WebGPU library, which is the only dependency.
 
-The Web UI version uses emcripten to cross-compile these two files into WASM.
+The Web UI version uses emcripten to cross-compile the C++ code into WASM. Other than emscripten, there are no dependencies.
 
-[llama.cpp](https://github.com/ggerganov/llama.cpp) is currently used to load models and perform tokenization.
-
-As of, May 13, 2023, only 7B llama models are supported. Wider model support should evolve quickly.
-
-TokenHawk output is entirely reproducible from run-to-run.
+TokenHawk aims to be reproducible from run-to-run. TokenHawk's output has been verified against the original llama implementation.
 
 # Command Line
 
@@ -41,34 +40,48 @@ python web/serve.py
 
 # Performance
 
-TokenHawk is pretty fast. On a 4090 using 7B-f16, TokenHawk clocks in at 30 tk/s while CUDA is 50 tk/s. And there is still room for improvement. We'll focus on the following perf improvements in the coming weeks:
+TokenHawk is fast. On a 4090 using 7B-f16, TokenHawk clocks in at 37 tk/s and there is still room for improvement. Here are single-token timings for the original 7B, f16 llama dataset (as of May 17th, 2023):
+
+| Video Card          | llama-pytorch | TokenHawk | llama.cpp-Cuda | llama.cpp-CPU |
+| ------------------- | ------------- | --------- | -------------- | ------------- |
+| Nvidia 4090 (lin)   | 46 (tk/s)     | 37 (tk/s) | 19 (tk/s)      | 5 (tk/s)      |
+| RX 7900 XTX (win)   | (unsupported) | 36 (!)    | (unsupported)  |               |
+
+All tests were executed on the GPU, except for llama.cpp-CPU. In the case of llama.cpp-Cuda, all layers were loaded onto the GPU using `-ngl 32`.
+
+We'll focus on the following perf improvements in the coming weeks:
 
 * Profile and optimize matrix multiplication.
-* Optimize single token generation.
-    * Add a two-stage parallel reduction step.
+* Further optimize single token generation.
 * Optimize WARP and Wavefront sizes for Nvidia and AMD.
 * Per-GPU hyper-parameter optimization.
-* Investigate feasibility of GPU-only operation. No hitting the CPU.
 * Investigate native f16 support. f16 is currently emulated in shaders.
 * Store intermediate GPU buffers in fp16. Specifically the context and working buffers.
-* Add 4-bit quantization.
+* Add 8-bit and 4-bit quantization.
 * Optimize transpose. Can we ensure better memory coalescing?
 
-## Data
+## Batch Prompt Performance
 
-More data to come.
+While TokenHawk's single-token performance is good, it's batch processing of prompt input isn't nearly as fast as it could be. This is mostly due to a suboptimal matrix multiplication implementation.
+
+# Limitations
+
+Given that TokenHawk is new and something of a prototype, there's a few gaps in it's features:
+
+* Needs more VRAM. TokenHawk runs entirely on the GPU.
+* Only 512 token context has been tested. Theoretically higher context lengths are supported but have not been tested.
+* Only tested 7B llama. Other models that follow the 7B llama architecture should work, but have not been tested.
+* GGML is the only file format supported.
 
 # See Also
 
-## Compilers
-
-While TokenHawk focuses on hand-tuning models, here are compiler projects that aim to automatically generate GPU code for models.
+I would like to include some performance measurements from the following projects.
 
 * [Triton](https://github.com/openai/triton). OpenAI's triton compiler.
-* [mlc-llm](https://github.com/mlc-ai/mlc-llm). LLMs running using hardware acceleration.
+* [mlc-llm](https://github.com/mlc-ai/mlc-llm). LLMs running using hardware acceleration. I would have gathered timings from mlc-llm as it has WebGPU support but I was unable to get it running locally.
 
 # Acknowledgments
 
-Thanks to [llama.cpp](https://github.com/ggerganov/llama.cpp) for GGML, tokenization, and its file format.
+A big thanks to [llama.cpp](https://github.com/ggerganov/llama.cpp). Beyond inspiration, I have borrowed and adapted a number of functions from this project including it's tokenizer and model loading functions.
 
 And Google's [Dawn](https://dawn.googlesource.com/dawn) for the WebGPU implementation.
