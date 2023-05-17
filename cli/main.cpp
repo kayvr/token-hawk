@@ -20,7 +20,6 @@ static void print_usage();
 static bool run_inference(WGPUDevice device, WGPUQueue queue, const th::ThLlamaParameters& params);
 
 int main(int argc, char* argv[]) {
-    std::string loadDirectory;
     th::ThLlamaParameters params{};
     for (int i = 1; i < argc; i++)
     {
@@ -62,23 +61,6 @@ int main(int argc, char* argv[]) {
     WGPUDevice device;
     WGPUQueue queue;
 
-    //{
-    //    // TODO Setup a native instance to enable timer query callbacks.
-    //    dawn::native::Instance instance{};
-
-    //    dawn::native::RequestAdapterOptions options{
-    //        .powerPreference = dawn::native::PowerPreference::HighPerformance,
-    //        .forceFallbackAdapter = false,
-    //    };
-    //    dawn::native::Adapter adapterNative;
-    //    instance.RequestAdapter(&options, request_adapter_callback, reinterpret_cast<void *>(&adapterNative));
-
-    //    dawn::native::DawnDeviceDescriptor nativeDeviceDesc{};
-    //    nativeDeviceDesc.forceDisabledToggles.push_back("disallow_unsafe_apis");
-    //    
-    //    device = adapterNative.CreatDevice(&nativeDeviceDesc);
-    //}
-
     DawnProcTable procs = dawn::native::GetProcs();
     dawnProcSetProcs(&procs);
 
@@ -111,12 +93,7 @@ int main(int argc, char* argv[]) {
 
     queue = wgpuDeviceGetQueue(device);
 
-    printf("Successfully created! %ld\n", queue);
-
-
-    //wgpuQueueOnSubmittedWorkDone(queue, 0, &queuedWorkCallbackWait, nullptr);
     run_inference(device, queue, params);
-
 
     wgpuQueueRelease(queue);
     wgpuDeviceRelease(device);

@@ -2,8 +2,15 @@ CC := emcc
 CXX := emcc
 LD := emcc
 BUILD ?= debug
-CXXFLAGS := -std=c++20 -Wall -Wextra -fwasm-exceptions -Wno-unused-function
-CCFLAGS := -Wall -Wextra -Wno-unused-function
+ifeq ($(BUILD),debug)
+    CXXFLAGS := -std=c++20 -Wall -Wextra -fwasm-exceptions -Wno-unused-function -O0 -g
+    CCFLAGS := -Wall -Wextra -Wno-unused-function -O0 -g
+else ifeq ($(BUILD),release)
+    CXXFLAGS := -std=c++20 -Wall -Wextra -fwasm-exceptions -Wno-unused-function -O3
+    CCFLAGS := -Wall -Wextra -Wno-unused-function -O3
+endif
+#CXXFLAGS := -std=c++20 -Wall -Wextra -fwasm-exceptions -Wno-unused-function
+#CCFLAGS := -Wall -Wextra -Wno-unused-function
 DEPFLAGS := -MMD -MP
 OBJDIR := obj
 SRCDIR := ../
@@ -13,9 +20,8 @@ $(shell mkdir -p $(OBJDIR) >/dev/null)
 
 CPP_SRC := $(wildcard $(SRCDIR)/*.cpp)
 CPP_SRC += $(wildcard $(SRCDIR)/web/*.cpp)
-CPP_SRC += $(wildcard $(SRCDIR)/llama-cpp/*.cpp)
 
-C_SRC := $(wildcard $(SRCDIR)/llama-cpp/*.c)
+C_SRC := $(wildcard $(SRCDIR)/*.c)
 
 CXX_OBJ := $(CPP_SRC:$(SRCDIR)/%.cpp=$(OBJDIR)/%.o)
 CC_OBJ := $(C_SRC:$(SRCDIR)/%.c=$(OBJDIR)/%.o)
@@ -31,9 +37,9 @@ all: live/index.html
 $(info CXX_OBJ is $(CXX_OBJ))
 $(info CC_OBJ is $(CC_OBJ))
 
-live/index.html: $(CXX_OBJ) $(CC_OBJ) capi.js
+live/index.html: $(CXX_OBJ) $(CC_OBJ)
 	$(MKDIR_P) ./live
-	$(LD) $(CXX_OBJ) $(CC_OBJ) $(LDFLAGS) --js-library capi.js -o ./live/index.html
+	$(LD) $(CXX_OBJ) $(CC_OBJ) $(LDFLAGS) -o ./live/index.html
 
 # Compile C++ files
 $(OBJDIR)/%.o: $(SRCDIR)/%.cpp

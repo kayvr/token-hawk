@@ -1,22 +1,14 @@
 #include "th.hpp"
 #include "th-llama.hpp" // For kUniformsSize
 
-#include "llama-cpp/llama.h"
-#include "llama-cpp/ggml.h"
-
 #include "math.h"
 
 #include <vector>
 #include <chrono>
+#include <cstring>
+#include <cinttypes>
 
 namespace th {
-
-TensorType get_TensorType_from_ggml(ggml_tensor* tensor) {
-    if      (tensor->type == GGML_TYPE_F32) { return TensorType_F32; }
-    else if (tensor->type == GGML_TYPE_F16) { return TensorType_F16; }
-    else                                    { assert(false); }
-    return TensorType_Unknown;
-}
 
 std::string get_TensorType_name(TensorType dt) {
     switch (dt) {
@@ -109,7 +101,7 @@ static bool validate_pipeline(
         const TensorBuffer* B = nullptr,
         const TensorBuffer* C = nullptr) {
     if (A) {
-        if (pipeline.sa != A->shape || pipeline.ta != A->type) {
+        if (!(pipeline.sa == A->shape) || pipeline.ta != A->type) {
             assert(false);
             return false;
         }
@@ -154,16 +146,6 @@ bool are_mat_mul_pipelines_the_same(const ComputePipeline& a, float scaleA, bool
     return true; 
 }
 
-TensorShape get_TensorShape_from_ggml(ggml_tensor* tensor) {
-    TensorShape out{};
-    out.l = tensor->ne[3];
-    out.b = tensor->ne[2];
-    out.r = tensor->ne[1];
-    out.c = tensor->ne[0];
-    out.canonicalize();
-    return out;
-}
-
 TensorBuffer::TensorBuffer(TensorShape shapeIn, TensorType typeIn, WGPUDevice device, WGPUBufferUsageFlags usage) {
     this->shape = shapeIn;
     this->type = typeIn;
@@ -172,20 +154,9 @@ TensorBuffer::TensorBuffer(TensorShape shapeIn, TensorType typeIn, WGPUDevice de
     if (device) { allocate_gpu_memory(device, usage); }
 }
 
-TensorBuffer::TensorBuffer(ggml_tensor* tensor, WGPUDevice device, WGPUQueue queue, WGPUBufferUsageFlags usage) {
-    this->shape = get_TensorShape_from_ggml(tensor);
-    this->type = get_TensorType_from_ggml(tensor);
-    this->ram = tensor;
-    this->originalShape = shape;
-  
-    if (device) { allocate_gpu_memory(device, usage); }
-    if (queue)  { upload_ggml_to_gpu(queue, tensor); }
-}
-
 TensorBuffer::TensorBuffer(const void* data, TensorShape shapeIn, TensorType type, bool backup, WGPUDevice device, WGPUQueue queue, WGPUBufferUsageFlags usage) {
     this->shape = shapeIn;
     this->type = type;
-    this->ram = nullptr;
     if (backup) {
         size_t size = this->get_size_bytes();
         this->cpuBackup.resize(size);
@@ -204,13 +175,11 @@ TensorBuffer& TensorBuffer::operator=(TensorBuffer&& other) noexcept {
         this->type = other.type;
         this->gpu = other.gpu;
         this->cpuOnly = other.cpuOnly;
-        this->ram = other.ram;
         this->gpu = other.gpu;
         this->originalShape = other.originalShape;
         this->cpuBackup = other.cpuBackup;
         this->name = other.name;
         other.gpu = nullptr;
-        other.ram = nullptr;
         other.cpuBackup.clear();
     }
     return *this;
@@ -220,14 +189,12 @@ TensorBuffer::TensorBuffer(TensorBuffer&& other) noexcept
     : shape(other.shape)
     , type(other.type)
     , cpuOnly(other.cpuOnly)
-    , ram(other.ram)
     , gpu(other.gpu)
     , originalShape(other.originalShape)
     , cpuBackup(other.cpuBackup)
     , name(other.name)
 {
     other.gpu = nullptr;
-    other.ram = nullptr;
     other.cpuBackup.clear();
 }
 
@@ -243,23 +210,9 @@ void TensorBuffer::upload_data_to_gpu(WGPUQueue queue, const void* data) {
     wgpuQueueWriteBuffer(queue, this->gpu, 0, data, this->get_size_bytes());
 }
 
-void TensorBuffer::upload_ggml_to_gpu(WGPUQueue queue, ggml_tensor* tensor) {
-    assert(this->gpu);
-    assert(this->shape == get_TensorShape_from_ggml(tensor));
-    assert(this->type == get_TensorType_from_ggml(tensor));
-    wgpuQueueWriteBuffer(queue, this->gpu, 0, ggml_get_data(tensor), this->get_size_bytes());
-}
-
 void TensorBuffer::allocate_gpu_memory(WGPUDevice device, WGPUBufferUsageFlags usage) {
     // TODO Adjust size of buffer if we have a format that is less than 8 bits.
-    //switch (type) {
-    //    case GGML_TYPE_Q4_0:
-    //    case GGML_TYPE_Q4_1:
-    //        if (size % 2 != 0) {size += 1;}
-    //        size /= 2;
-    //        break;
-    //}
-
+    // get_TensorType_size
     assert(!this->gpu);
     assert(this->type != TensorType_Unknown);
     size_t size = get_size_bytes();
@@ -323,21 +276,6 @@ ComputePipeline create_compute_pipeline(
     return out;
 }
 
-static std::string llama_ggml_type_to_str(enum ggml_type type) {
-    // Print ggml_type as string using a switch statement
-    switch (type) {
-        case GGML_TYPE_Q4_0: return "GGML_TYPE_Q4_0";
-        case GGML_TYPE_Q4_1: return "GGML_TYPE_Q4_1";
-        case GGML_TYPE_I8:   return "GGML_TYPE_I8";
-        case GGML_TYPE_I16:  return "GGML_TYPE_I16";
-        case GGML_TYPE_I32:  return "GGML_TYPE_I32";
-        case GGML_TYPE_F16:  return "GGML_TYPE_F16";
-        case GGML_TYPE_F32:  return "GGML_TYPE_F32";
-        default:             return "GGML_TYPE_UNKNOWN";
-    }
-    return "GGML_TYPE_UNKNOWN";
-}
-
 void print_TensorBuffer(TensorBuffer* buffer, const char* bufferName) {
     const auto & shape = buffer->shape;
     int64_t size = buffer->get_size_bytes();
@@ -349,19 +287,75 @@ void print_TensorBuffer(TensorBuffer* buffer, const char* bufferName) {
     fprintf(stdout, "    type = %s\n", get_TensorType_name(buffer->type).c_str());
 }
 
-void print_ggml_tensor_info(struct ggml_tensor * tensor, const char* tensorName)
-{
-    const auto & shape = tensor->ne;
-    const auto & strides = tensor->nb;
-
-    fprintf(stdout, "\n");
-    fprintf(stdout, "Tensor info (%s):\n", tensorName);
-    fprintf(stdout, "    dims = %d\n", tensor->n_dims);
-    fprintf(stdout, "    shape = %" PRId64 " (row) %" PRId64 " (col) %" PRId64 " %" PRId64 "\n", shape[1], shape[0], shape[2], shape[3]);
-    fprintf(stdout, "    strides = %ld %ld %ld %ld\n", strides[1], strides[0], strides[2], strides[3]);
-    fprintf(stdout, "    type = %s\n", llama_ggml_type_to_str(tensor->type).c_str());
+// Originally from llama.cpp
+// FP16 <-> FP32
+// ref: https://github.com/Maratyszcza/FP16
+float fp32_from_bits(uint32_t w) {
+    union {
+        uint32_t as_bits;
+        float as_value;
+    } fp32;
+    fp32.as_bits = w;
+    return fp32.as_value;
 }
 
+uint32_t fp32_to_bits(float f) {
+	union {
+		float as_value;
+		uint32_t as_bits;
+	} fp32;
+	fp32.as_value = f;
+	return fp32.as_bits;
+}
+
+float ggml_compute_fp16_to_fp32(ggml_fp16_t h) {
+    const uint32_t w = (uint32_t) h << 16;
+    const uint32_t sign = w & UINT32_C(0x80000000);
+    const uint32_t two_w = w + w;
+
+    const uint32_t exp_offset = UINT32_C(0xE0) << 23;
+#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 199901L) || defined(__GNUC__) && !defined(__STRICT_ANSI__)
+    const float exp_scale = 0x1.0p-112f;
+#else
+    const float exp_scale = fp32_from_bits(UINT32_C(0x7800000));
+#endif
+    const float normalized_value = fp32_from_bits((two_w >> 4) + exp_offset) * exp_scale;
+
+    const uint32_t magic_mask = UINT32_C(126) << 23;
+    const float magic_bias = 0.5f;
+    const float denormalized_value = fp32_from_bits((two_w >> 17) | magic_mask) - magic_bias;
+
+    const uint32_t denormalized_cutoff = UINT32_C(1) << 27;
+    const uint32_t result = sign |
+        (two_w < denormalized_cutoff ? fp32_to_bits(denormalized_value) : fp32_to_bits(normalized_value));
+    return fp32_from_bits(result);
+}
+
+ggml_fp16_t ggml_compute_fp32_to_fp16(float f) {
+#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 199901L) || defined(__GNUC__) && !defined(__STRICT_ANSI__)
+    const float scale_to_inf = 0x1.0p+112f;
+    const float scale_to_zero = 0x1.0p-110f;
+#else
+    const float scale_to_inf = fp32_from_bits(UINT32_C(0x77800000));
+    const float scale_to_zero = fp32_from_bits(UINT32_C(0x08800000));
+#endif
+    float base = (fabsf(f) * scale_to_inf) * scale_to_zero;
+
+    const uint32_t w = fp32_to_bits(f);
+    const uint32_t shl1_w = w + w;
+    const uint32_t sign = w & UINT32_C(0x80000000);
+    uint32_t bias = shl1_w & UINT32_C(0xFF000000);
+    if (bias < UINT32_C(0x71000000)) {
+        bias = UINT32_C(0x71000000);
+    }
+
+    base = fp32_from_bits((bias >> 1) + UINT32_C(0x07800000)) + base;
+    const uint32_t bits = fp32_to_bits(base);
+    const uint32_t exp_bits = (bits >> 13) & UINT32_C(0x00007C00);
+    const uint32_t mantissa_bits = bits & UINT32_C(0x00000FFF);
+    const uint32_t nonsign = exp_bits + mantissa_bits;
+    return (sign >> 16) | (shl1_w > UINT32_C(0xFF000000) ? UINT16_C(0x7E00) : nonsign);
+}
 
 
 

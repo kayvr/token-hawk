@@ -94,10 +94,6 @@ struct LlamaVocab {
 };
 
 struct LlamaModel {
-    LlamaModel() = default;
-    LlamaModel(llama_context* ctx);
-    ~LlamaModel(); // Because of the raw llama_context pointer below. Should disallow copying.
-
     std::mt19937 rng{};
 
     // Hyper parameters. Defaults are 7B llama model.
@@ -153,9 +149,6 @@ struct LlamaModel {
     std::vector<WGPUBuffer> splitBuffers;
 
     LlamaVocab vocab{};
-
-    // llama.cpp context for RAM backing.
-    llama_context* llamacpp_context{};
 
     // WebGPU loading code.
     bool loadFailed = false;

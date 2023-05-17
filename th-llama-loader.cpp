@@ -1,5 +1,4 @@
 #include "th-llama-loader.hpp"
-#include "llama-cpp/ggml.h"
 
 #include <span>
 #include <cstdint>
@@ -480,6 +479,8 @@ std::shared_ptr<LlamaModel> load_llama_chunked(
     }
 
     post_load_init_model(device, queue, model);
+
+    model->loadedMapping.clear();
     
     return model;
 }

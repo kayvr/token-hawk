@@ -122,7 +122,6 @@ document.getElementById('fileInput').addEventListener('change', async (e) => {
 });
 
 document.getElementById('convert-model').addEventListener('click', function() {
-    Module._capi_test_capi();
     const convertInput = document.getElementById('convert-model-input');
     convertInput.click();
 });
@@ -439,8 +438,6 @@ Module.onRuntimeInitialized = async _ => {
     //        console.log(name);
     //    }
     //}
-
-    //Module._capi_test_capi();
 };
 
-sendChatMessage(kSystemId, "TokenHawk is GPU-powered and runs on your local machine. Currently, only 7B-f16 llama models are supported.\nDue to file size limits in Chrome, use the 'Convert Model' button below in Firefox to split a 7B <i>lamma.cpp</i> GGML file into chunks. Then, in Chrome, you can load the resulting chunks using the 'Load Model' button ('Load Model' allows multiple file selection).\nMore details can be found <a href='https://github.com/kayvr/token-hawk'>here</a>.")
+sendChatMessage(kSystemId, "Welcome to TokenHawk.\nPower your local LLms using WebGPU.\nCurrently, TokenHawk is in testing and only 7B-f16 llama models are supported.\nDue to file size limits in Chrome, use the 'Convert Model' button below in Firefox to split a 7B <i>lamma.cpp</i> GGML file into chunks. Then, in Chrome, you can load the resulting chunks using the 'Load Model' button ('Load Model' allows multiple file selection).\nMore details can be found <a href='https://github.com/kayvr/token-hawk'>here</a>.")

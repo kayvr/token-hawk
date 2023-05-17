@@ -1,8 +1,11 @@
 // TokenHawk llama model.
 #include "th-llama.hpp"
 
-#include "llama-cpp/llama.h"
-#include "llama-cpp/llama_utils.h"
+#include <functional>
+#include <cinttypes>
+#include <atomic>
+#include <cstring>
+#include <queue>
 
 namespace th {
 
@@ -31,9 +34,9 @@ std::vector<tk_llama_token> tk_llama_tokenize(
 const char * tk_llama_token_to_str(std::shared_ptr<LlamaModel> m, tk_llama_token token);
 tk_llama_token tk_llama_token_eos();
 
-llama_vocab::id llama_sample_top_p_top_k(
+tk_llama_token llama_sample_top_p_top_k(
         std::shared_ptr<LlamaModel> m,
-        const std::vector<llama_vocab::id> & last_n_tokens,
+        const std::vector<tk_llama_token> & last_n_tokens,
         int top_k,
         float top_p,
         float temp,
@@ -55,201 +58,6 @@ void build_final_compute_cmdbuf(
         std::shared_ptr<LlamaModel> m,
         LlamaFinalComputePipeline& p,
         int n_tokens);
-
-LlamaModel::LlamaModel(llama_context* ctx) {
-    this->llamacpp_context = ctx;
-}
-
-LlamaModel::~LlamaModel() {
-    if (this->llamacpp_context) {
-        llama_free(this->llamacpp_context);
-        this->llamacpp_context = nullptr;
-    }
-}
-
-// DEPRECATED. We will be switching to our own loader.
-std::shared_ptr<LlamaModel> load_llama(WGPUDevice device, WGPUQueue queue, const std::string& filename, int32_t num_batch_tokens) {
-    int32_t seed = 680658349;
-
-    llama_context* ctx{};
-    {
-        llama_context_params lparams = llama_context_default_params();
-        ctx = llama_init_from_file(filename.c_str(), lparams);
-        if (ctx == NULL) {
-            fprintf(stderr, "%s: error: failed to load model '%s'\n", __func__, filename.c_str());
-            return {};
-        }
-    }
-
-    std::shared_ptr<LlamaModel> m = std::make_shared<LlamaModel>(ctx);
-
-    m->rng = std::mt19937(seed);
-
-    m->n_batch = num_batch_tokens;
-    m->n_vocab = ctx->model.hparams.n_vocab;
-    m->n_ctx   = ctx->model.hparams.n_ctx;
-    m->n_embd  = ctx->model.hparams.n_embd;
-    m->n_mult  = ctx->model.hparams.n_mult;
-    m->n_head  = ctx->model.hparams.n_head;
-    m->n_layer = ctx->model.hparams.n_layer;
-    m->n_rot   = ctx->model.hparams.n_rot;
-    m->f16     = ctx->model.hparams.f16;
-
-    TensorShape kv_cache_shape = TensorShape{ .l=0, .b=m->n_ctx, .r=m->n_head, .c=m->n_embd/m->n_head};
-
-    // Working buffers for input/output.
-    m->working_key_cache = TensorBuffer(kv_cache_shape, TensorType_F32, device);
-    m->working_val_cache = TensorBuffer(kv_cache_shape, TensorType_F32, device);
-
-    TensorShape inp_shape = TensorShape{.l=0, .b=0, .r=m->n_batch, .c=m->n_embd};
-    for (int i = 0; i < LlamaModel::nInpBuffers; ++i) {
-        m->inp[i] = TensorBuffer(inp_shape, TensorType_F32, device);
-    }
-    for (int i = 0; i < LlamaModel::nSplitScratch; ++i) {
-        m->splitScratch[i] = TensorBuffer(inp_shape, TensorType_F32, device);
-    }
-
-
-    int n_ff = ((2*(4*m->n_embd)/3 + m->n_mult - 1)/m->n_mult)*m->n_mult;
-    assert(n_ff == 11008); // Presumably this value is only relevant for 7B.
-    TensorShape ffshape = TensorShape{.l=0, .b=0, .r=m->n_batch, .c=n_ff};
-    m->ffWorking[0] = TensorBuffer(ffshape, TensorType_F32, device);
-    m->ffWorking[1] = TensorBuffer(ffshape, TensorType_F32, device);
-
-    m->norm = TensorBuffer(ctx->model.norm, device, queue);
-    if (!kSplitFinalMultiply) {
-        m->outputMat = TensorBuffer(ctx->model.output, device, queue);
-    } else {
-        // Split up buffer.
-        m->outputMat = TensorBuffer(ctx->model.output, /*disable-gpu*/nullptr);
-        //m->outputMat = TensorBuffer(ctx->model.output, device, queue);
-
-        int64_t origStride = m->outputMat.shape.c * get_TensorType_size(m->outputMat.type);
-        int64_t newStride = origStride / 2;
-
-        int64_t newBufferSize = newStride * m->outputMat.shape.r;
-
-        TensorShape newShape = m->outputMat.shape;
-        newShape.c = newShape.c / 2;
-
-        uint8_t* origData = (uint8_t*)ggml_get_data(m->outputMat.ram);
-
-        // To avoid allocating too much memory (a problem in WASM)
-        // we perform one buffer at a time then release the memory
-        // backing of m->outputMat afterwards.
-        {
-            std::vector<uint8_t> buffer1;
-            buffer1.resize(newBufferSize);
-
-            for (int r = 0; r < m->outputMat.shape.r; ++r) {
-                memcpy(&buffer1[r*newStride], &origData[r*origStride], newStride);
-            }
-
-            m->outputMatSplit1 = std::move(th::TensorBuffer(buffer1.data(), newShape, m->outputMat.type, true, device, queue));
-        }
-
-        {
-            std::vector<uint8_t> buffer2;
-            buffer2.resize(newBufferSize);
-
-            for (int r = 0; r < m->outputMat.shape.r; ++r) {
-                memcpy(&buffer2[r*newStride], &origData[r*origStride + newStride], newStride);
-            }
-
-            m->outputMatSplit2 = std::move(th::TensorBuffer(buffer2.data(), newShape, m->outputMat.type, true, device, queue));
-        }
-    }
-
-    m->out = TensorBuffer({.r=1, .c=m->outputMat.shape.r}, TensorType_F32, device);
-    m->outScratch = TensorBuffer({.r=1, .c=m->outputMat.shape.r}, TensorType_F32, device);
-
-    m->resultBuffer = TensorBuffer(m->out.shape, m->out.type, device, WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead);
-
-    {
-        LlamaNetworkUniforms uniforms{};
-        size_t size = kLlamaUniformsSize;
-        WGPUBufferDescriptor bufferDesc = {};
-        bufferDesc.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_Uniform;
-        bufferDesc.size  = size;
-        m->networkUniforms = wgpuDeviceCreateBuffer(device, &bufferDesc);
-        wgpuQueueWriteBuffer(queue, m->networkUniforms, 0, &uniforms, size);
-    }
-
-    {
-        LlamaTensorDimsUniforms uniforms{};
-        size_t size = kLlamaUniformsSize;
-        WGPUBufferDescriptor bufferDesc = {};
-        bufferDesc.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_Uniform;
-        bufferDesc.size  = size;
-        for (int i = 0; i < (int)m->dimsUniforms.size(); ++i) {
-            m->dimsUniforms[i] = wgpuDeviceCreateBuffer(device, &bufferDesc);
-            wgpuQueueWriteBuffer(queue, m->dimsUniforms[i], 0, &uniforms, size);
-        }
-    }
-
-    {
-        LlamaVecMatSplitDimsUniforms uniforms{
-            .A_B = 0,
-            .A_M = 0,
-            .A_N = 0,
-            .split = 0,
-            .B_B = 0,
-            .B_M = 0,
-            .B_N = 0,
-            .totalSplits = LlamaModel::nSplits,
-        };
-        size_t size = kLlamaUniformsSize;
-        WGPUBufferDescriptor bufferDesc = {};
-        bufferDesc.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_Uniform;
-        bufferDesc.size  = size;
-        for (int i = 0; i < LlamaModel::nSplits; ++i) {
-            m->splitBuffers.push_back(wgpuDeviceCreateBuffer(device, &bufferDesc));
-            uniforms.split = i;
-            wgpuQueueWriteBuffer(queue, m->splitBuffers[i], 0, &uniforms, size);
-            //m->splitTensors.push_back(std::move(TensorBuffer(inp_shape, TensorType_F32, device)));
-        }
-    }
-    
-    printf("Constructing compute pipelines.\n");
-
-    assert((TensorShape{.l=0, .b=0, .r=m->n_vocab, .c=m->n_embd} == get_TensorShape_from_ggml(ctx->model.tok_embeddings)));
-    m->tok_embeddings = TensorBuffer(ctx->model.tok_embeddings, /*disable-gpu*/nullptr);
-    for (int i = 0; i < m->n_layer; ++i) {
-        m->layers.push_back(LlamaLayer{
-          .index = i,
-
-          .attention_norm = TensorBuffer(ctx->model.layers[i].attention_norm, device, queue),
-
-          .wq = TensorBuffer(ctx->model.layers[i].wq, device, queue), // n_embd x n_embd
-          .wk = TensorBuffer(ctx->model.layers[i].wk, device, queue), // n_embd x n_embd
-          .wv = TensorBuffer(ctx->model.layers[i].wv, device, queue), // n_embd x n_embd
-          .wo = TensorBuffer(ctx->model.layers[i].wo, device, queue), // n_embd x n_embd
-
-          .ffn_norm = TensorBuffer(ctx->model.layers[i].ffn_norm, device, queue),
-
-          .w1 = TensorBuffer(ctx->model.layers[i].w1, device, queue),
-          .w2 = TensorBuffer(ctx->model.layers[i].w2, device, queue),
-          .w3 = TensorBuffer(ctx->model.layers[i].w3, device, queue),
-
-          .key_cache = TensorBuffer(kv_cache_shape, TensorType_F32, device), // n_ctx x n_head x (n_embd/n_head)
-          .value_cache = TensorBuffer(kv_cache_shape, TensorType_F32, device), // 512x32x128
-        });
-    }
-
-    LlamaLayer& l = m->layers[0];
-
-    // This doesn't build command buffers despite its name. It caches
-    // pipelines for future use.
-    build_layer_cmdbuf(device, nullptr, m, l, m->ps, 1, 0);
-    build_layer_cmdbuf(device, nullptr, m, l, m->pb, kBatchTokenSize, 0);
-
-    build_final_compute_cmdbuf(device, nullptr, m, m->pfs, 1);
-    build_final_compute_cmdbuf(device, nullptr, m, m->pfb, kBatchTokenSize);
-
-    printf("Finished constructing pipelines.\n");
-
-    return m;
-}
 
 void build_pipelines_llama(WGPUDevice device, WGPUQueue queue, std::shared_ptr<LlamaModel> m) {
     printf("Constructing compute pipelines.\n");
@@ -300,17 +108,8 @@ void do_inference(WGPUDevice device, WGPUQueue queue, std::shared_ptr<LlamaModel
     std::string prompt = thParams.prompt;
     prompt.insert(0, 1, ' ');
     
-    bool noLlamaCpp = (m->llamacpp_context == nullptr);
-    printf("noLlamaCpp = %d\n", noLlamaCpp);
-
     const int n_ctx = 512;
-    if (noLlamaCpp) {
-        // Assume we loaded the file ourselves.
-        m->embd_inp = tk_llama_tokenize(m, prompt.c_str(), true);
-    } else {
-        m->embd_inp = ::llama_tokenize(m->llamacpp_context, prompt.c_str(), true);
-    }
-    //const int n_ctx = llama_n_ctx(m->llamacpp_context);
+    m->embd_inp = tk_llama_tokenize(m, prompt.c_str(), true);
 
     if ((int)m->embd_inp.size() > n_ctx - 4) {
         fprintf(stderr, "%s: error: prompt is too long (%d tokens, max %d)\n", __func__, (int) m->embd_inp.size(), n_ctx - 4);
@@ -319,16 +118,10 @@ void do_inference(WGPUDevice device, WGPUQueue queue, std::shared_ptr<LlamaModel
 
     // determine newline token
     std::vector<tk_llama_token> llama_token_newline;
-    if (noLlamaCpp) {
-        llama_token_newline = tk_llama_tokenize(m, "\n", false);
-    } else {
-        llama_token_newline = ::llama_tokenize(m->llamacpp_context, "\n", false);
-    }
+    llama_token_newline = tk_llama_tokenize(m, "\n", false);
 
     m->last_n_tokens.resize(n_ctx);
     std::fill(m->last_n_tokens.begin(), m->last_n_tokens.end(), 0);
-
-    gpt_params params{}; // Default params.
 
     bool input_noecho  = false;
 
@@ -357,8 +150,6 @@ void do_inference(WGPUDevice device, WGPUQueue queue, std::shared_ptr<LlamaModel
 }
 
 void async_finalize_inference(std::shared_ptr<LlamaModel> m) {
-    bool noLlamaCpp = (m->llamacpp_context == nullptr);
-
     m->n_past += m->embd.size();
 
     if ((int) m->embd_inp.size() < m->n_consumed) {
@@ -367,19 +158,13 @@ void async_finalize_inference(std::shared_ptr<LlamaModel> m) {
     }
 
     for (auto id : m->embd) {
-        if (noLlamaCpp) {
-            printf("%s", tk_llama_token_to_str(m, id));
-        } else {
-            printf("%s", llama_token_to_str(m->llamacpp_context, id));
-        }
+        printf("%s", tk_llama_token_to_str(m, id));
     }
 
     fflush(stdout);
 }
 
 void async_continue_inference(WGPUDevice device, WGPUQueue queue, std::shared_ptr<LlamaModel> m) {
-    bool noLlamaCpp = (m->llamacpp_context == nullptr);
-
     m->embd.clear();
 
     while ((int) m->embd_inp.size() > m->n_consumed && m->embd.size() < kAllowedSubsequentBatchSize) {
@@ -397,8 +182,6 @@ void async_continue_inference(WGPUDevice device, WGPUQueue queue, std::shared_pt
 }
 
 bool sync_continue_inference(WGPUDevice device, WGPUQueue queue, std::shared_ptr<LlamaModel> m) {
-    bool noLlamaCpp = (m->llamacpp_context == nullptr);
-
     std::vector<tk_llama_token> embd;
 
     while ((int) m->embd_inp.size() > m->n_consumed && embd.size() < kAllowedSubsequentBatchSize) {
@@ -425,11 +208,7 @@ bool sync_continue_inference(WGPUDevice device, WGPUQueue queue, std::shared_ptr
     }
 
     for (auto id : embd) {
-        if (noLlamaCpp) {
-            printf("%s", tk_llama_token_to_str(m, id));
-        } else {
-            printf("%s", llama_token_to_str(m->llamacpp_context, id));
-        }
+        printf("%s", tk_llama_token_to_str(m, id));
     }
 
     fflush(stdout);
@@ -712,17 +491,11 @@ tk_llama_token th_eval_gpu(
                          int        n_tokens,
                          int        n_past) {
     const int N = n_tokens;
-    llama_context* lctx = m->llamacpp_context;
 
     double tokenBeginTime = get_time_seconds(); // Note: we should be using queries on the GPU to get better timings.
 
     const int n_embd  = m->n_embd;
     const int n_head  = m->n_head;
-
-    std::vector<uint8_t>* buf_compute = nullptr;
-    if (lctx) {
-       buf_compute = &lctx->buf_compute;
-    }
 
     // Uniforms for RoPE
     {
@@ -800,66 +573,38 @@ tk_llama_token th_eval_gpu(
     
     int64_t size = n_embd * N * sizeof(float);
 
-    if (lctx) {
-        struct ggml_init_params params = {
-            /*.mem_size   =*/ buf_compute->size(),
-            /*.mem_buffer =*/ buf_compute->data(),
-            /*.no_alloc   =*/ false,
-        };
+    if (kUseGpuEmbeddingSelection) {
+        WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
+        
+        // Use GPU-accelerated f16->f32 conversion and row selection.
+        for (int i = 0; i < N; i++) {
+            int row = tokens[i];
+            int64_t embeddingsStride = m->tok_embeddings.shape.c * get_TensorType_size(m->tok_embeddings.type);
+            int64_t embeddingsOffset = embeddingsStride * row;
+            int64_t inpStride = m->inp[0].shape.c * get_TensorType_size(m->inp[0].type);
 
-        struct ggml_context * ctx0 = ggml_init(params);
+            cmdbuf_f16_f32_conversion(
+                device, encoder, nullptr, nullptr,
+                m->inp[0], m->tok_embeddings, 4,
+                i*inpStride,
+                embeddingsOffset);
+        }
 
-        // for big prompts, if BLAS is enabled, it is better to use only one thread
-        // otherwise, the threads are spin-lock waiting for the BLAS calls and are degrading the performance
-        ggml_cgraph gf = {};
-        gf.n_threads = 1;
+        wgpuCommandEncoderCopyBufferToBuffer(encoder, m->inp[0].gpu, 0, m->inp[6].gpu, 0, m->inp[0].get_size_bytes());
 
-        struct ggml_tensor * embd = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, N);
-        memcpy(embd->data, tokens, N*ggml_element_size(embd));
+        WGPUCommandBuffer commands = wgpuCommandEncoderFinish(encoder, nullptr);
+        wgpuCommandEncoderRelease(encoder);
 
-        struct ggml_tensor * inpL = ggml_get_rows(ctx0, m->tok_embeddings.ram, embd);
-
-        ggml_build_forward_expand(&gf, inpL);
-        ggml_graph_compute       (ctx0, &gf);
-
-        ggml_free(ctx0);
-    
-        wgpuQueueWriteBuffer(queue, m->inp[0].gpu, 0, ggml_get_data(inpL), size);
-        wgpuQueueWriteBuffer(queue, m->inp[6].gpu, 0, ggml_get_data(inpL), size);
+        wgpuQueueSubmit(queue, 1, &commands);
+        wgpuCommandBufferRelease(commands);
     } else {
-        if (kUseGpuEmbeddingSelection) {
-            WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
+        for (int i = 0; i < N; i++) {
+            int row = tokens[i];
+            int64_t stride = m->tok_embeddings.shape.c * get_TensorType_size(m->tok_embeddings.type);
+            int64_t offset =  stride * row;
             
-            // Use GPU-accelerated f16->f32 conversion and row selection.
-            for (int i = 0; i < N; i++) {
-                int row = tokens[i];
-                int64_t embeddingsStride = m->tok_embeddings.shape.c * get_TensorType_size(m->tok_embeddings.type);
-                int64_t embeddingsOffset = embeddingsStride * row;
-                int64_t inpStride = m->inp[0].shape.c * get_TensorType_size(m->inp[0].type);
-
-                cmdbuf_f16_f32_conversion(
-                    device, encoder, nullptr, nullptr,
-                    m->inp[0], m->tok_embeddings, 4,
-                    i*inpStride,
-                    embeddingsOffset);
-            }
-
-            wgpuCommandEncoderCopyBufferToBuffer(encoder, m->inp[0].gpu, 0, m->inp[6].gpu, 0, m->inp[0].get_size_bytes());
-
-            WGPUCommandBuffer commands = wgpuCommandEncoderFinish(encoder, nullptr);
-            wgpuCommandEncoderRelease(encoder);
-
-            wgpuQueueSubmit(queue, 1, &commands);
-            wgpuCommandBufferRelease(commands);
-        } else {
-            for (int i = 0; i < N; i++) {
-                int row = tokens[i];
-                int64_t stride = m->tok_embeddings.shape.c * get_TensorType_size(m->tok_embeddings.type);
-                int64_t offset =  stride * row;
-                
-                wgpuQueueWriteBuffer(queue, m->inp[0].gpu, i*stride, &m->tok_embeddings.cpuBackup[offset], stride);
-                wgpuQueueWriteBuffer(queue, m->inp[6].gpu, i*stride, &m->tok_embeddings.cpuBackup[offset], stride);
-            }
+            wgpuQueueWriteBuffer(queue, m->inp[0].gpu, i*stride, &m->tok_embeddings.cpuBackup[offset], stride);
+            wgpuQueueWriteBuffer(queue, m->inp[6].gpu, i*stride, &m->tok_embeddings.cpuBackup[offset], stride);
         }
     }
 
@@ -993,17 +738,12 @@ tk_llama_token sync_finish_compute(WGPUDevice device, WGPUQueue queue, std::shar
         }
     }
 
-    //if (temperature > 0.0) {
-    //    // Softmax and perform top_p
-    //}
-
     int32_t top_k = 40;
     float   top_p = 0.95f;
     float   temp  = 0.80f;
     float   repeat_penalty  = 1.10f;
 
-    // Apparently llama_vocab::id and tk_llama_token are the same thing.
-    llama_vocab::id token = llama_sample_top_p_top_k(m, {}, top_k, top_p, temp, repeat_penalty, logits);
+    tk_llama_token token = llama_sample_top_p_top_k(m, {}, top_k, top_p, temp, repeat_penalty, logits);
 
     return token;
 }
@@ -1067,8 +807,7 @@ static void async_calculate_next_token(WGPUDevice device, WGPUQueue queue, std::
     float   temp  = 0.80f;
     float   repeat_penalty  = 1.10f;
 
-    // Apparently llama_vocab::id and tk_llama_token are the same thing.
-    llama_vocab::id token = llama_sample_top_p_top_k(m, {}, top_k, top_p, temp, repeat_penalty, logits);
+    tk_llama_token token = llama_sample_top_p_top_k(m, {}, top_k, top_p, temp, repeat_penalty, logits);
 
     m->lastGeneratedToken = token;
 
@@ -1078,21 +817,21 @@ static void async_calculate_next_token(WGPUDevice device, WGPUQueue queue, std::
 }
 
 
-static void sample_top_k(std::vector<std::pair<float, llama_vocab::id>> & logits_id, int top_k) {
+static void sample_top_k(std::vector<std::pair<float, tk_llama_token>> & logits_id, int top_k) {
     // find the top k tokens
     std::partial_sort(
             logits_id.begin(),
             logits_id.begin() + top_k, logits_id.end(),
-            [](const std::pair<float, llama_vocab::id> & a, const std::pair<float, llama_vocab::id> & b) {
+            [](const std::pair<float, tk_llama_token> & a, const std::pair<float, tk_llama_token> & b) {
         return a.first > b.first;
     });
 
     logits_id.resize(top_k);
 }
 
-llama_vocab::id llama_sample_top_p_top_k(
+tk_llama_token llama_sample_top_p_top_k(
         std::shared_ptr<LlamaModel> m,
-        const std::vector<llama_vocab::id> & last_n_tokens,
+        const std::vector<tk_llama_token> & last_n_tokens,
         int top_k,
         float top_p,
         float temp,
@@ -1105,7 +844,7 @@ llama_vocab::id llama_sample_top_p_top_k(
     if (temp <= 0) {
         // select the token with the highest logit directly
         float max_logit = plogits[0];
-        llama_vocab::id max_id = 0;
+        tk_llama_token max_id = 0;
 
         for (int i = 1; i < n_logits; ++i) {
             if (plogits[i] > max_logit) {
@@ -1116,7 +855,7 @@ llama_vocab::id llama_sample_top_p_top_k(
         return max_id;
     }
 
-    std::vector<std::pair<float, llama_vocab::id>> logits_id;
+    std::vector<std::pair<float, tk_llama_token>> logits_id;
     logits_id.reserve(n_logits);
 
     {
@@ -1179,21 +918,8 @@ llama_vocab::id llama_sample_top_p_top_k(
         }
     }
 
-    //printf("\n");
-    //for (int i = 0; i < (int) 10; i++) {
-    //    printf("%d: '%s' %f\n", i, vocab.id_to_token.at(logits_id[i].second).c_str(), probs[i]);
-    //}
-    //printf("\n\n");
-    //exit(0);
-
-    //printf("Range: %ld\n", logits_id.size());
     std::discrete_distribution<> dist(probs.begin(), probs.end());
     int idx = dist(m->rng);
-
-    //llama_context* lctx = m->llamacpp_context;
-    //for (std::pair<float, llama_vocab::id> i : logits_id) {
-    //    printf("Word: %s (%d) (%f)\n", llama_token_to_str(lctx, i.second), i.second, i.first);
-    //}
 
     return logits_id[idx].second;
 }
@@ -1232,7 +958,7 @@ struct tk_llama_sp_bigram {
 struct TkLlamaTokenizer {
     TkLlamaTokenizer(const LlamaVocab & vocab): vocab_(vocab) {}
 
-    void tokenize(const std::string & text, std::vector<llama_vocab::id> & output) {
+    void tokenize(const std::string & text, std::vector<tk_llama_token> & output) {
         // split string into utf8 chars
         int index = 0;
         size_t offs = 0;
@@ -1291,7 +1017,7 @@ struct TkLlamaTokenizer {
             if (token == vocab_.token_to_id.end()) {
                 // output any symbols that did not form tokens as bytes.
                 for (int j = 0; j < (int) symbol.n; ++j) {
-                    llama_vocab::id token_id = static_cast<uint8_t>(symbol.text[j]) + 3;
+                    tk_llama_token token_id = static_cast<uint8_t>(symbol.text[j]) + 3;
                     output.push_back(token_id);
                 }
             } else {
@@ -1332,9 +1058,9 @@ private:
     tk_llama_sp_bigram::queue work_queue_;
 };
 
-static std::vector<llama_vocab::id> tk_llama_tokenize(const LlamaVocab & vocab, const std::string & text, bool bos) {
+static std::vector<tk_llama_token> tk_llama_tokenize(const LlamaVocab & vocab, const std::string & text, bool bos) {
     TkLlamaTokenizer tokenizer(vocab);
-    std::vector<llama_vocab::id> output;
+    std::vector<tk_llama_token> output;
 
     if (text.size() == 0) {
         return output;

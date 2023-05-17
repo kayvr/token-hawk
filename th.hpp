@@ -9,24 +9,11 @@
 // * Member functions should use 'this->' to access member variables. Functions that transform
 //   types are preferred. Not functions that transform data within a type.
 // * Use modern memory management. Strongly prefer standard library memory management.
-//
-// Values
-//  TokenHawk highly values GPU performance.
-//
-//  TokenHawk values parallelism on the GPU.
-//
-//  TokenHawk values GPU efficiency over simplicity.
-//
-//  TokenHawk values CPU simplicity over efficiency.
-//
-//  TokenHawk values purpose built optimizations for GPU hardware.
 
 #include <webgpu/webgpu.h>
 #include <assert.h>
 #include <vector>
 #include <string>
-
-struct ggml_tensor;
 
 namespace th {
 
@@ -36,9 +23,7 @@ enum TensorType {
     TensorType_F32,
 };
 
-TensorType get_TensorType_from_ggml(ggml_tensor* tensor);
 std::string get_TensorType_name(TensorType dt);
-void print_ggml_tensor_info(struct ggml_tensor * tensor, const char* tensorName);
 
 inline size_t get_TensorType_size(TensorType dt) {
   // Note: We need to be careful with 4-bit or 3-bit types.
@@ -87,8 +72,6 @@ struct TensorShape {
     }
 };
 
-TensorShape get_TensorShape_from_ggml(ggml_tensor* tensor);
-
 inline bool operator==(const TensorShape& lhs, const TensorShape& rhs) {
     return (lhs.l == rhs.l && lhs.b == rhs.b && lhs.r == rhs.r && lhs.c == rhs.c);
 }
@@ -102,7 +85,6 @@ struct TensorBuffer {
 
     TensorBuffer() = default;
     TensorBuffer(TensorShape shape, TensorType type, WGPUDevice device = nullptr, WGPUBufferUsageFlags usage = k_default_usage);
-    TensorBuffer(ggml_tensor* tensor, WGPUDevice device = nullptr, WGPUQueue queue = nullptr, WGPUBufferUsageFlags usage = k_default_usage);
     TensorBuffer(const void* data, TensorShape shape, TensorType type, bool backup, WGPUDevice device = nullptr, WGPUQueue queue = nullptr, WGPUBufferUsageFlags usage = k_default_usage);
     ~TensorBuffer() {
         free_buffers();
@@ -118,7 +100,6 @@ struct TensorBuffer {
 
     size_t get_size_bytes() const;
     void allocate_gpu_memory(WGPUDevice device, WGPUBufferUsageFlags usage);
-    void upload_ggml_to_gpu(WGPUQueue queue, ggml_tensor* tensor);
     void upload_data_to_gpu(WGPUQueue queue, const void* data);
 
     void reset_shape();
@@ -137,8 +118,6 @@ struct TensorBuffer {
             wgpuBufferRelease(this->gpu);
             this->gpu = nullptr;
         }
-
-        this->ram = nullptr;
     }
 
     size_t get_size() const {
@@ -160,7 +139,6 @@ struct TensorBuffer {
 
     //int64_t               disk{}; // Unused.
     bool                  cpuOnly = false;
-    ggml_tensor*          ram{};
     std::vector<uint8_t>  cpuBackup{};
     WGPUBuffer            gpu{};
 
@@ -308,6 +286,12 @@ bool are_mat_mul_pipelines_the_same(const ComputePipeline& a, float scaleA, bool
 double get_time_seconds();
 
 void print_descriptive_stats(std::vector<double> data, const std::string& dataType);
+
+typedef uint16_t ggml_fp16_t;
+ggml_fp16_t ggml_compute_fp32_to_fp16(float f);
+float ggml_compute_fp16_to_fp32(ggml_fp16_t h);
+uint32_t fp32_to_bits(float f);
+float fp32_from_bits(uint32_t w);
 
 ComputePipeline create_compute_pipeline(
         WGPUDevice device,

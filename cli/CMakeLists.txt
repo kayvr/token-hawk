@@ -18,14 +18,11 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/dawn dawn)
 file(GLOB sources CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/../*.cpp)
 file(GLOB headers CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/../*.hpp)
 
-file(GLOB sources_llama_cpp CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/../llama-cpp/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../llama-cpp/*.c)
-file(GLOB headers_llama_cpp CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/../llama-cpp/*.hpp ${CMAKE_CURRENT_SOURCE_DIR}/../llama-cpp/*.h)
-
 file(GLOB sources_cli CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
 file(GLOB headers_cli CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.hpp)
 
-set(sources ${sources} ${sources_cli} ${sources_llama_cpp})
-set(headers ${headers} ${headers_cli} ${headers_llama_cpp})
+set(sources ${sources} ${sources_cli})
+set(headers ${headers} ${headers_cli})
 
 add_executable(th ${sources} ${headers})
 add_compile_options(th PRIVATE
