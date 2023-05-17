@@ -10,6 +10,7 @@
 #include <vector>
 #include <random>
 #include <unordered_map>
+#include <functional>
 
 struct llama_context; // From GGML's llama.h.
 
@@ -21,6 +22,8 @@ static const bool kUseGpuEmbeddingSelection = false;
 struct LlamaModel;
 std::shared_ptr<LlamaModel> load_llama(WGPUDevice device, WGPUQueue queue, const std::string& filename, int32_t n_batch_tokens);
 void build_pipelines_llama(WGPUDevice device, WGPUQueue queue, std::shared_ptr<LlamaModel> m);
+
+void on_human_message(std::shared_ptr<LlamaModel> m, const std::string& message);
 
 typedef int tk_llama_token;
 
@@ -150,6 +153,12 @@ struct LlamaModel {
 
     LlamaVocab vocab{};
 
+    // Callbacks to interact with running program.
+    // These are required for async operation
+    std::function<void(std::string /*token*/, std::string /*messageSoFar*/)> onNewToken;
+    std::function<void(std::string /*fullMessage*/)> onInferenceComplete;
+    std::function<void(std::string /*terminate_reason*/)> onError;
+
     // WebGPU loading code.
     bool loadFailed = false;
     int64_t numFilesLoaded = 0;
@@ -162,6 +171,8 @@ struct LlamaModel {
     int n_past     = 0;
     int n_consumed = 0;
     tk_llama_token lastGeneratedToken{};
+    int64_t nTargetTokens = 0;
+    std::string generatedMessage;
 
     std::vector<tk_llama_token> last_n_tokens{};
 };
@@ -205,6 +216,6 @@ void reset_working_memory_tensors(LlamaModel& m);
 
 
 
-void do_inference(WGPUDevice device, WGPUQueue queue, std::shared_ptr<LlamaModel> m, const th::ThLlamaParameters& thParams);
+void do_inference(WGPUDevice device, WGPUQueue queue, std::shared_ptr<LlamaModel> m, std::string prompt);
 
 } // namespace th

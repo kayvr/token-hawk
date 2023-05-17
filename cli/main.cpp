@@ -110,7 +110,7 @@ static bool run_inference(WGPUDevice device, WGPUQueue queue, const th::ThLlamaP
     } else {
         model = th::load_llama_file(device, queue, params.modelFile);
     }
-    th::do_inference(device, queue, model, params);
+    th::do_inference(device, queue, model, params.prompt);
     model.reset();
 }
 

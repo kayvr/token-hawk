@@ -62,7 +62,7 @@ We'll focus on the following perf improvements in the coming weeks:
 
 ## Batch Prompt Performance
 
-While TokenHawk's single-token performance is good, it's batch processing of prompt input isn't nearly as fast as it could be. This is mostly due to a suboptimal matrix multiplication implementation.
+While TokenHawk's single-token performance is good, it's batch processing of prompt input isn't nearly as fast as it could be. This is due to a suboptimal matrix multiplication. 
 
 # Limitations
 

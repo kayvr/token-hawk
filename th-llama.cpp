@@ -13,6 +13,9 @@ static const int64_t kBatchTokenSize = 8;
 static const int64_t kAllowedSubsequentBatchSize = 1;
 static const bool kShowTiming = true;
 static const bool kSplitCompute = false;
+static const int64_t kMaxOutputTokens = 500;
+static const int64_t kMaxAsyncTokensPerMsg = 128;
+static const int kMaxContext = 512;
 #if defined(__EMSCRIPTEN__)
 // Emscripten must use async computation.
 static const bool kUseAsyncComputation = true;
@@ -104,34 +107,48 @@ void reset_working_memory_tensors(LlamaModel& m) {
 bool sync_continue_inference(WGPUDevice device, WGPUQueue queue, std::shared_ptr<LlamaModel> m);
 void async_continue_inference(WGPUDevice device, WGPUQueue queue, std::shared_ptr<LlamaModel> m);
 
-void do_inference(WGPUDevice device, WGPUQueue queue, std::shared_ptr<LlamaModel> m, const th::ThLlamaParameters& thParams) {
-    std::string prompt = thParams.prompt;
-    prompt.insert(0, 1, ' ');
-    
-    const int n_ctx = 512;
-    m->embd_inp = tk_llama_tokenize(m, prompt.c_str(), true);
-
-    if ((int)m->embd_inp.size() > n_ctx - 4) {
-        fprintf(stderr, "%s: error: prompt is too long (%d tokens, max %d)\n", __func__, (int) m->embd_inp.size(), n_ctx - 4);
+void do_inference(WGPUDevice device, WGPUQueue queue, std::shared_ptr<LlamaModel> m, std::string prompt) {
+    if (m->n_past >= kMaxOutputTokens) {
+        std::string error = "Maximum context reached (" + std::to_string(kMaxContext) + "). Please reset context by typing '[cmd] reset'";
+        printf("Warning: %s\n", error.c_str());
+        if (m->onError) {
+            m->onError(error);
+        }
         return;
     }
 
-    // determine newline token
-    std::vector<tk_llama_token> llama_token_newline;
-    llama_token_newline = tk_llama_tokenize(m, "\n", false);
+    if (m->n_past == 0) {
+        prompt.insert(0, 1, ' ');
+    }
+    
+    m->embd_inp = tk_llama_tokenize(m, prompt.c_str(), true);
+    m->n_consumed = 0;
 
-    m->last_n_tokens.resize(n_ctx);
-    std::fill(m->last_n_tokens.begin(), m->last_n_tokens.end(), 0);
+    if ((int)m->embd_inp.size() > kMaxContext - 4) {
+        fprintf(stderr, "%s: error: prompt is too long (%d tokens, max %d)\n", __func__, (int) m->embd_inp.size(), kMaxContext - 4);
+        return;
+    }
 
-    bool input_noecho  = false;
+    //// determine newline token
+    //std::vector<tk_llama_token> llama_token_newline;
+    //llama_token_newline = tk_llama_tokenize(m, "\n", false);
+    
+    printf("n_past: %d\n", m->n_past);
+
+    if (m->last_n_tokens.size() == 0) {
+        m->last_n_tokens.resize(kMaxContext);
+        std::fill(m->last_n_tokens.begin(), m->last_n_tokens.end(), 0);
+    }
 
     if (kUseAsyncComputation) {
         printf("=================\n");
         printf("ASYNC OPERATION\n");
         printf("=================\n");
+        int64_t nStartTokens = m->n_past;
+        m->nTargetTokens = nStartTokens + kMaxAsyncTokensPerMsg;
         async_continue_inference(device, queue, m);
 #if !defined(__EMSCRIPTEN__)
-        while (m->n_past < 500) { // May want to make n_past atomic.
+        while (m->n_past < kMaxOutputTokens) { // May want to make n_past atomic.
             wgpuDeviceTick(device);
             usleep(10);
         }
@@ -140,7 +157,7 @@ void do_inference(WGPUDevice device, WGPUQueue queue, std::shared_ptr<LlamaModel
         printf("=================\n");
         printf("SYNC OPERATION\n");
         printf("=================\n");
-        for (int i = 0; i < 500; i++) {
+        for (int i = 0; i < kMaxOutputTokens; i++) {
             if (!sync_continue_inference(device, queue, m)) {
                 printf("EOS\n");
                 break;
@@ -152,13 +169,17 @@ void do_inference(WGPUDevice device, WGPUQueue queue, std::shared_ptr<LlamaModel
 void async_finalize_inference(std::shared_ptr<LlamaModel> m) {
     m->n_past += m->embd.size();
 
-    if ((int) m->embd_inp.size() < m->n_consumed) {
-        m->embd.clear();
-        m->embd.push_back(m->lastGeneratedToken);
-    }
+    //if ((int) m->embd_inp.size() < m->n_consumed) {
+    //    m->embd.clear();
+    //    m->embd.push_back(m->lastGeneratedToken);
+    //}
 
     for (auto id : m->embd) {
-        printf("%s", tk_llama_token_to_str(m, id));
+        const char* str = tk_llama_token_to_str(m, id);
+        //m->generatedMessage += str;
+        //if (m->onNewToken) {
+        //    m->onNewToken(str, m->generatedMessage);
+        //}
     }
 
     fflush(stdout);
@@ -176,6 +197,12 @@ void async_continue_inference(WGPUDevice device, WGPUQueue queue, std::shared_pt
 
     if (m->embd.size() == 0) {
         m->embd.push_back(m->lastGeneratedToken);
+
+        if (m->onNewToken) {
+            const char* str = tk_llama_token_to_str(m, m->lastGeneratedToken);
+            m->generatedMessage += str;
+            m->onNewToken(str, m->generatedMessage);
+        }
     }
 
     /*m->lastGeneratedToken =*/ th_eval_gpu(device, queue, m, m->embd.data(), m->embd.size(), m->n_past);
@@ -201,6 +228,10 @@ bool sync_continue_inference(WGPUDevice device, WGPUQueue queue, std::shared_ptr
     if ((int) m->embd_inp.size() < m->n_consumed) {
         embd.clear();
         embd.push_back(m->lastGeneratedToken);
+        if (m->onNewToken) {
+            const char* str = tk_llama_token_to_str(m, m->lastGeneratedToken);
+            m->onNewToken(str, m->generatedMessage);
+        }
     }
 
     if (!m->embd.empty() && m->embd.back() == tk_llama_token_eos()) {
@@ -208,7 +239,9 @@ bool sync_continue_inference(WGPUDevice device, WGPUQueue queue, std::shared_ptr
     }
 
     for (auto id : embd) {
-        printf("%s", tk_llama_token_to_str(m, id));
+        const char* str = tk_llama_token_to_str(m, id);
+        printf("%s", str);
+        m->generatedMessage += str;
     }
 
     fflush(stdout);
@@ -756,16 +789,12 @@ void async_finish_compute(WGPUDevice device, WGPUQueue queue, std::shared_ptr<Ll
     if (gCallbacks.size() == 0) {
         gCallbacks.reserve(/*n_ctx*/512);
     }
-    // YUCK! Static callback. Fix this. Place in a list shared with the model.
-    // We need to understand what outstanding callbacks we have.
+    // TEMPORARY! Static callback. Fix this. Place in a list shared with the model.
     //std::function<void(WGPUBufferMapAsyncStatus)> callback;
     gCallbacks.push_back(
         [m,tokenBeginTime,device,queue](WGPUBufferMapAsyncStatus status) {
             std::vector<float> logits;
             logits.resize(m->out.shape.c);
-            //std::shared_ptr<void> raiiCleanup( 0, [m](void*) {
-            //    wgpuBufferUnmap(m->resultBuffer.gpu);
-            //} );
 
             if (status != WGPUBufferMapAsyncStatus_Success) {
                 printf("Result async failed Status: %d\n", status);
@@ -780,6 +809,7 @@ void async_finish_compute(WGPUDevice device, WGPUQueue queue, std::shared_ptr<Ll
             memcpy(logits.data(), mappedData, m->resultBuffer.get_size_bytes());
 
             wgpuBufferUnmap(m->resultBuffer.gpu);
+
             async_calculate_next_token(device, queue, m, logits, tokenBeginTime);
         });
 
@@ -813,7 +843,14 @@ static void async_calculate_next_token(WGPUDevice device, WGPUQueue queue, std::
 
     async_finalize_inference(m);
 
-    async_continue_inference(device, queue, m);
+    if (m->n_past < m->nTargetTokens && m->n_past < kMaxOutputTokens) {
+        async_continue_inference(device, queue, m);
+    } else {
+        if (m->onInferenceComplete) {
+            m->onInferenceComplete(m->generatedMessage);
+            m->generatedMessage = "";
+        }
+    }
 }
 
 

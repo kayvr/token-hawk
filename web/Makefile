@@ -9,8 +9,6 @@ else ifeq ($(BUILD),release)
     CXXFLAGS := -std=c++20 -Wall -Wextra -fwasm-exceptions -Wno-unused-function -O3
     CCFLAGS := -Wall -Wextra -Wno-unused-function -O3
 endif
-#CXXFLAGS := -std=c++20 -Wall -Wextra -fwasm-exceptions -Wno-unused-function
-#CCFLAGS := -Wall -Wextra -Wno-unused-function
 DEPFLAGS := -MMD -MP
 OBJDIR := obj
 SRCDIR := ../
@@ -28,7 +26,7 @@ CC_OBJ := $(C_SRC:$(SRCDIR)/%.c=$(OBJDIR)/%.o)
 
 DEP := $(CXX_OBJ:%.o=%.d) $(CC_OBJ:%.o=%.d)
 
-LDFLAGS := -s WASM=1 -s USE_WEBGPU=1 -s ALLOW_MEMORY_GROWTH=1 -s ENVIRONMENT=web -s TEXTDECODER=2 --output_eol=linux -fwasm-exceptions -s EXPORTED_FUNCTIONS="['_main', '_malloc', '_free']" -s EXPORTED_RUNTIME_METHODS="['intArrayFromString', 'setValue']" -s TOTAL_MEMORY=2147483648 -s MAXIMUM_MEMORY=4gb
+LDFLAGS := -s WASM=1 -s USE_WEBGPU=1 -s ALLOW_MEMORY_GROWTH=1 -s ENVIRONMENT=web -s TEXTDECODER=2 --output_eol=linux -fwasm-exceptions -s EXPORTED_FUNCTIONS="['_main', '_malloc', '_free']" -s EXPORTED_RUNTIME_METHODS="['intArrayFromString', 'setValue', 'ccall', 'stringToUTF8']" -s TOTAL_MEMORY=2147483648 -s MAXIMUM_MEMORY=4gb
 TARGET := output
 
 # Default target

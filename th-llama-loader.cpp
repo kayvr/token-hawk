@@ -330,7 +330,7 @@ void load_model_chunk(th::LlamaModel* m, WGPUDevice device, WGPUQueue queue, voi
 
 void post_load_init_model(WGPUDevice device, WGPUQueue queue, std::shared_ptr<th::LlamaModel> m) {
     // Initialize the model.
-    int32_t seed = 680658349;
+    int32_t seed = 780658349;
     m->rng = std::mt19937(seed);
 
     TensorShape kv_cache_shape = TensorShape{ .l=0, .b=m->n_ctx, .r=m->n_head, .c=m->n_embd/m->n_head};

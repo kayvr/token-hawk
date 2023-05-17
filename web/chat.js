@@ -17,12 +17,17 @@ const th_version = 1
 
 let gFilesProcessed = 0;
 
-function sendChatMessage(botId, message) {
+
+function sendChatMessage(botId, message, messageId) {
     if (message.trim()) { // trim to prevent sending empty messages
         var chatlogs = document.getElementById('chatlogs');
         var lines = message.split('\n');
         var messageContainer = document.createElement('div');
         messageContainer.className = 'message';
+
+        if (!(messageId === null || messageId === undefined || messageId.trim().length === 0)) {
+            messageContainer.setAttribute('id', messageId);
+        }
 
         var icon = document.createElement('img');
         if (botId === kBotId || botId == kSystemId) {
@@ -62,11 +67,45 @@ function sendChatMessage(botId, message) {
     }
 }
 
+function updateMessageText(messageId, newMessage) {
+    var messageElement = document.getElementById(messageId);
+
+    if (messageElement) {
+        var chatlogs = document.getElementById('chatlogs');
+        // Find the message-text child div and update its contents
+        var messageTextDiv = messageElement.getElementsByClassName('message-text')[0];
+        if (messageTextDiv) {
+            messageTextDiv.innerHTML = ''; // Clear the existing message text
+
+            // Split the new message by line
+            var lines = newMessage.split('\n');
+            for (var i = 0; i < lines.length; i++) {
+                var newMessageLine = document.createElement('p');
+                if (lines[i].trim()) { // only append non-empty lines
+                    newMessageLine.textContent = lines[i];
+                } else { // Append <br> in place of empty lines
+                    newMessageLine = document.createElement('br');
+                }
+                messageTextDiv.appendChild(newMessageLine);
+            }
+        }
+
+        chatlogs.scrollTop = chatlogs.scrollHeight;
+    } else {
+        console.log(`Message with id ${messageId} not found.`);
+    }
+}
+
 function submitMessage() {
     var messagebox = document.getElementById('message');
     var message = messagebox.value;
 
-    sendChatMessage(kHumanId, message);
+    sendChatMessage(kHumanId, message, null);
+
+    Module.ccall('capi_on_human_message',
+                 null,                      // return type
+                 ['string'],                // argument type
+                 [message]);
 
     messagebox.value = '';
 }
@@ -115,7 +154,7 @@ document.getElementById('fileInput').addEventListener('change', async (e) => {
     console.log("Files processed: " + gFilesProcessed);
 
     if (Module._capi_model_end_load()) {
-        sendChatMessage(kSystemId, "Successfully loaded model.");
+        sendChatMessage(kSystemId, "Successfully loaded model.", null);
     }
 
     progressBar.style.display = "none";
@@ -405,7 +444,7 @@ async function convertGGMLFile(file, convert) {
         originalFileOffset = cur;
     }
 
-    sendChatMessage(kSystemId, "Successfully chunked GGML file.");
+    sendChatMessage(kSystemId, "Successfully chunked GGML file.", null);
 
     progressBar.style.display = "none";
 }
@@ -440,4 +479,4 @@ Module.onRuntimeInitialized = async _ => {
     //}
 };
 
-sendChatMessage(kSystemId, "Welcome to TokenHawk.\nPower your local LLms using WebGPU.\nCurrently, TokenHawk is in testing and only 7B-f16 llama models are supported.\nDue to file size limits in Chrome, use the 'Convert Model' button below in Firefox to split a 7B <i>lamma.cpp</i> GGML file into chunks. Then, in Chrome, you can load the resulting chunks using the 'Load Model' button ('Load Model' allows multiple file selection).\nMore details can be found <a href='https://github.com/kayvr/token-hawk'>here</a>.")
+sendChatMessage(kSystemId, "TokenHawk is in testing and only 7B-f16 llama models are supported.\nDue to file size limits in Chrome, use the 'Convert Model' button below in Firefox to split a 7B <i>lamma.cpp</i> GGML file into chunks. Then, in Chrome, you can load the resulting chunks using the 'Load Model' button ('Load Model' allows multiple file selection).\nMore details can be found <a href='https://github.com/kayvr/token-hawk'>here</a>.", null)
