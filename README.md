@@ -18,7 +18,11 @@ TokenHawk also integrates well with other WebGPU apps, like this one:
 
 
 
-https://github.com/kayvr/token-hawk/assets/98552926/7810518a-1672-45f3-82ac-d7f40d84b8a2
+
+
+https://github.com/kayvr/token-hawk/assets/98552926/a7b26199-5c97-463a-a266-786db1f6ffd9
+
+
 
 
 
@@ -48,7 +52,11 @@ After converting the file, here's a video of how to load the chunks:
 
 
 
-https://github.com/kayvr/token-hawk/assets/98552926/90e3e5d3-90cf-4264-97bf-7937a214d9d0
+
+
+
+https://github.com/kayvr/token-hawk/assets/98552926/d73ea677-81a0-47e8-ad85-6f509a230736
+
 
 
 
