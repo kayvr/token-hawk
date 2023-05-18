@@ -11,7 +11,7 @@ namespace th {
 
 static const int64_t kBatchTokenSize = 8;
 static const int64_t kAllowedSubsequentBatchSize = 1;
-static const bool kShowTiming = true;
+static const bool kShowTiming = false;
 static const bool kSplitCompute = false;
 static const int64_t kMaxOutputTokens = 500;
 static const int64_t kMaxAsyncTokensPerMsg = 128;
