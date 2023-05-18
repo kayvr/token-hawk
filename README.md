@@ -6,13 +6,13 @@ Hand-written [LLaMA](https://arxiv.org/abs/2302.13971) inference using WebGPU. I
 
 # Description
 
-WebGPU powers TokenHawk's LLM inference and there are only three files:
+WebGPU powers TokenHawk's LLM inference, and there are only three files:
 
 * th.cpp - Provides WebGPU support for running LLMs.
 * th-llama.cpp - GPU implementation of llama.
 * th-llama-loader.cpp - Routines to load model files.
 
-Dependencies are minimal. For the command line app, TokenHawk requires only Google's Dawn library. And the Web app has no dependencies.
+Dependencies are also minimal. For the command line app, TokenHawk requires only Google's Dawn library. And the Web app has no dependencies.
 
 TokenHawk also integrates well with other WebGPU apps, like this one:
 
