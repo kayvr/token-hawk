@@ -189,9 +189,9 @@ TensorBuffer::TensorBuffer(TensorBuffer&& other) noexcept
     : shape(other.shape)
     , type(other.type)
     , cpuOnly(other.cpuOnly)
+    , cpuBackup(other.cpuBackup)
     , gpu(other.gpu)
     , originalShape(other.originalShape)
-    , cpuBackup(other.cpuBackup)
     , name(other.name)
 {
     other.gpu = nullptr;
@@ -3211,7 +3211,7 @@ static bool validate_vector_mat_mul_split_trans(
         const TensorBuffer& A,
         const TensorBuffer& B,
         const TensorBuffer& C,
-        const std::vector<TensorBuffer*>& scratchBuffers) {
+        const std::vector<TensorBuffer*>& /*scratchBuffers*/) {
     if (A.type != TensorType_F32) {
         fprintf(stderr, "create_vector_mat_mul_trans: A.type != TensorType_F32\n");
         assert(false);
@@ -3331,7 +3331,7 @@ static ComputePipeline pipeline_vector_mat_mul_split_trans(
     const int64_t kWorkgroupSize = 256;
 
     if ((cols / numSplits) < kWorkgroupSize) {
-        printf("A columns is less than kWorkgroupSize cols:%d numSplits:%d kWorkgroupSize:%d\n", cols, numSplits, kWorkgroupSize);
+        printf("A columns is less than kWorkgroupSize cols:%" PRId64 " numSplits:%d kWorkgroupSize:%" PRId64 "\n", cols, numSplits, kWorkgroupSize);
 
         assert(false);
         return {};
@@ -3439,7 +3439,7 @@ CommandBuffer cmdbuf_vector_mat_mul_split_trans(
     CommandBuffer out{};
 
     std::vector<std::vector<WGPUBindGroupEntry>> bgEntriesSplit;
-    for (int i = 0; i < splitBuffers.size(); ++i) {
+    for (int i = 0; i < (int)splitBuffers.size(); ++i) {
         bgEntriesSplit.push_back({
           WGPUBindGroupEntry{
             .binding = 0,
@@ -3483,7 +3483,7 @@ CommandBuffer cmdbuf_vector_mat_mul_split_trans(
 
     wgpuComputePassEncoderSetPipeline(pass, pipeline->pipeline);
 
-    for (int i = 0; i < splitBuffers.size(); ++i) {
+    for (int i = 0; i < (int)splitBuffers.size(); ++i) {
         WGPUBindGroupDescriptor bgDescSplit1 = {
                                   .layout     = pipeline->bindGroupLayout,
                                   .entryCount = (uint32_t)bgEntriesSplit[i].size(),
@@ -3588,9 +3588,9 @@ static bool validate_vector_multi_mat_mul_split_trans(
         const TensorBuffer& A,
         const std::vector<TensorBuffer*>& B,
         const TensorBuffer& C,
-        const std::vector<TensorBuffer*>& scratchBuffers,
+        const std::vector<TensorBuffer*>& /*scratchBuffers*/,
         int numSplits) {
-    if (B.size() != numSplits) {
+    if ((int)B.size() != numSplits) {
         fprintf(stderr, "create_vector_multi_mat_mul_trans: Expected B array to equal numSplits\n");
         assert(false);
         return false;
@@ -3725,7 +3725,7 @@ static ComputePipeline pipeline_vector_multi_mat_mul_split_trans(
     const int64_t kWorkgroupSize = 256;
 
     if ((cols / numSplits) < kWorkgroupSize) {
-        printf("A columns is less than kWorkgroupSize cols:%d numSplits:%d kWorkgroupSize:%d\n", cols, numSplits, kWorkgroupSize);
+        printf("A columns is less than kWorkgroupSize cols:%" PRId64 " numSplits:%d kWorkgroupSize:%" PRId64 "\n", cols, numSplits, kWorkgroupSize);
 
         assert(false);
         return {};
@@ -3744,7 +3744,7 @@ static ComputePipeline pipeline_vector_multi_mat_mul_split_trans(
     if (is_f16) { is_f16_str = "true"; }
 
 
-    printf("STATS: %d %d %d %d f16:%d\n", kTileSize, cols, numSplits, kWorkgroupSize, is_f16);
+    printf("STATS: %" PRId64 " %" PRId64 " %d %" PRId64 " f16:%d\n", kTileSize, cols, numSplits, kWorkgroupSize, is_f16);
     
     // TODO:  Use uniform buffers for the ability to change sizes of input matrices.
     //        We shouldn't recreate pipelines.
@@ -3838,7 +3838,7 @@ CommandBuffer cmdbuf_vector_multi_mat_mul_split_trans(
     CommandBuffer out{};
 
     std::vector<std::vector<WGPUBindGroupEntry>> bgEntriesSplit;
-    for (int i = 0; i < splitBuffers.size(); ++i) {
+    for (int i = 0; i < (int)splitBuffers.size(); ++i) {
         bgEntriesSplit.push_back({
           WGPUBindGroupEntry{
             .binding = 0,
@@ -3882,7 +3882,7 @@ CommandBuffer cmdbuf_vector_multi_mat_mul_split_trans(
 
     wgpuComputePassEncoderSetPipeline(pass, pipeline->pipeline);
 
-    for (int i = 0; i < splitBuffers.size(); ++i) {
+    for (int i = 0; i < (int)splitBuffers.size(); ++i) {
         WGPUBindGroupDescriptor bgDescSplit1 = {
                                   .layout     = pipeline->bindGroupLayout,
                                   .entryCount = (uint32_t)bgEntriesSplit[i].size(),
@@ -4067,8 +4067,8 @@ CommandBuffer cmdbuf_vector_reduce(
       }
     }
 
-    int64_t rows = B.shape.r;
-    int64_t cols = B.shape.c;
+    //int64_t rows = B.shape.r;
+    //int64_t cols = B.shape.c;
 
     CommandBuffer out{};
 
@@ -4291,8 +4291,8 @@ CommandBuffer cmdbuf_f16_f32_conversion(
       }
     }
 
-    int64_t rows = B.shape.r;
-    int64_t cols = B.shape.c;
+    //int64_t rows = B.shape.r;
+    //int64_t cols = B.shape.c;
 
     CommandBuffer out{};
 

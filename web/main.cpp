@@ -22,7 +22,7 @@ static WGPUDevice gDevice{};
 static WGPUQueue gQueue{};
 static std::shared_ptr<th::LlamaModel> gModel;
 static std::vector<std::string> gHumanMessages{};
-static int64_t gLastProcessedHumanMessage = -1;
+//static int64_t gLastProcessedHumanMessage = -1;
 static bool gInferenceComplete = false;
 static int64_t gBotMessageSequence = 0;
 static std::string gLastBotId = "";

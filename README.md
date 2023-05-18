@@ -1,22 +1,28 @@
 # TokenHawk
 
-Hand-written [LLaMA](https://arxiv.org/abs/2302.13971) inference using WebGPU.
+Hand-written [LLaMA](https://arxiv.org/abs/2302.13971) inference using WebGPU. It's fast, and you can try it out [online](https://ui.tokenhawk.chat/).
 
-TokenHawk is very new. Time will be needed to get to feature parity. Please see the limitations section.
+⚠️  TokenHawk is under active development. Only llama 7B-f16 is supported.  ⚠️
 
 # Description
 
-WebGPU powers TokenHawk's LLM inference. There are three core files:
+WebGPU powers TokenHawk's LLM inference and there are only three files:
 
-* th.cpp - Provides GPU support for running LLMs.
+* th.cpp - Provides WebGPU support for running LLMs.
 * th-llama.cpp - GPU implementation of llama.
 * th-llama-loader.cpp - Routines to load model files.
 
-Native C++ is used for command line (CLI) TokenHawk. This CLI version statically links Google's C++ WebGPU library, which is the only dependency.
+Dependencies are minimal. For the command line app, TokenHawk requires only Google's Dawn library. And the Web app has no dependencies.
 
-The Web UI version uses emcripten to cross-compile the C++ code into WASM. Other than emscripten, there are no dependencies.
+TokenHawk also integrates well with other WebGPU apps, like this one:
 
-TokenHawk aims to be reproducible from run-to-run. TokenHawk's output has been verified against the original llama implementation.
+
+
+https://github.com/kayvr/token-hawk/assets/98552926/7810518a-1672-45f3-82ac-d7f40d84b8a2
+
+
+
+You'll find the app [here](https://tokenhawk.chat).
 
 # Command Line
 
@@ -32,20 +38,32 @@ $ ./th -m models/llama-7B/ggml-model-f16.bin "<prompt goes here>"
 
 See the [Web directory](web/README.md) for build and usage instructions.
 
-For simple and quick access, use the Web UI. You can try it out online here, or host it locally:
+For simple and quick access, use the [online demo](https://ui.tokenhawk.chat/).
 
-```
-python web/serve.py
-```
+## How to load models into the WebUI?
+
+Due to file size limitations in Chrome, model files must be split into ~550 megabytes chunks. You can use the [web version](https://ui.tokenhawk.chat/) of TokenHawk to convert pre-existing models using Firefox. Click on the 'Convert Model (Firefox Only)' button and select your f16-7B GGML file to convert. It will prompt you to download 28 files. Please be patient.
+
+After converting the file, here's a video of how to load the chunks:
+
+
+
+https://github.com/kayvr/token-hawk/assets/98552926/90e3e5d3-90cf-4264-97bf-7937a214d9d0
+
+
+
+## How do I convert llama weights into GGML format?
+
+Download [llama.cpp](https://github.com/ggerganov/llama.cpp) and follow it's documentation and utilities to convert llama weights. More details to come.
 
 # Performance
 
-TokenHawk is fast. On a 4090 using 7B-f16, TokenHawk clocks in at 37 tk/s and there is still room for improvement. Here are single-token timings for the original 7B, f16 llama dataset (as of May 17th, 2023):
+TokenHawk is fast. On a 4090 using 7B-f16, TokenHawk clocks in at 37 tk/s. And there is still room for improvement. Here are single-token timings for the original 7B, f16 llama dataset (as of May 17th, 2023):
 
-| Video Card          | llama-pytorch | TokenHawk | llama.cpp-Cuda | llama.cpp-CPU |
-| ------------------- | ------------- | --------- | -------------- | ------------- |
-| Nvidia 4090 (lin)   | 46 (tk/s)     | 37 (tk/s) | 19 (tk/s)      | 5 (tk/s)      |
-| RX 7900 XTX (win)   | (unsupported) | 36 (!)    | (unsupported)  |               |
+| Video Card          | llama-pytorch (tk/s) | TokenHawk | llama.cpp-Cuda | llama.cpp-CPU |
+| ------------------- | -------------------- | --------- | -------------- | ------------- |
+| Nvidia 4090 (lin)   | 46                   | 37        | 19             | 5             |
+| RX 7900 XTX (win)   | (unsupported)        | 36 (!)    | (unsupported)  |               |
 
 All tests were executed on the GPU, except for llama.cpp-CPU. In the case of llama.cpp-Cuda, all layers were loaded onto the GPU using `-ngl 32`.
 
@@ -62,13 +80,13 @@ We'll focus on the following perf improvements in the coming weeks:
 
 ## Batch Prompt Performance
 
-While TokenHawk's single-token performance is good, it's batch processing of prompt input isn't nearly as fast as it could be. This is due to a suboptimal matrix multiplication. 
+While TokenHawk's single-token performance is good, its batch processing of prompt input isn't as fast as it could be. This is due to a suboptimal matrix multiplication. 
 
 # Limitations
 
 Given that TokenHawk is new and something of a prototype, there's a few gaps in it's features:
 
-* Needs more VRAM. TokenHawk runs entirely on the GPU.
+* Needs VRAM. TokenHawk runs entirely on the GPU.
 * Only 512 token context has been tested. Theoretically higher context lengths are supported but have not been tested.
 * Only tested 7B llama. Other models that follow the 7B llama architecture should work, but have not been tested.
 * GGML is the only file format supported.
