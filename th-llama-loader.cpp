@@ -181,7 +181,7 @@ bool load_weights(th::LlamaModel* m, WGPUDevice device, WGPUQueue queue, void* d
         if (tname == "tok_embeddings.weight") {
             if (kUseGpuEmbeddingSelection) {
                 // We now copy and convert embeddings on the GPU.
-                m->loadedMapping[tname] = std::move(th::TensorBuffer((const void*)(buffer.data() + offset), shape, tensorType, false, device, queue, th::TensorBuffer::k_default_usage));
+                m->loadedMapping[tname] = th::TensorBuffer((const void*)(buffer.data() + offset), shape, tensorType, false, device, queue, th::TensorBuffer::k_default_usage);
             } else {
                 printf("Found tok_embeddings.weight. Reprocessing tokens into f32.\n");
                 // We convert tok_embeddings to float32 from float16. Somewhat expensive.
@@ -192,11 +192,11 @@ bool load_weights(th::LlamaModel* m, WGPUDevice device, WGPUQueue queue, void* d
                     newBuff[i] = ggml_compute_fp16_to_fp32(readData<uint16_t>(f16tof32_conv_buff, convBuffOffset));
                 }
                 //m->loadedMapping[tname] = std::move(th::TensorBuffer((const void*)(buffer.data() + offset), shape, tensorType, true));
-                m->loadedMapping[tname] = std::move(th::TensorBuffer(newBuff.data(), shape, TensorType_F32, true));
+                m->loadedMapping[tname] = th::TensorBuffer(newBuff.data(), shape, TensorType_F32, true);
                 printf("Finished reprocessing.\n");
             }
         } else if (tname == "output.weight") {
-            m->loadedMapping[tname] = std::move(th::TensorBuffer((const void*)(buffer.data() + offset), shape, tensorType, false, device, queue, th::TensorBuffer::k_default_usage));
+            m->loadedMapping[tname] = th::TensorBuffer((const void*)(buffer.data() + offset), shape, tensorType, false, device, queue, th::TensorBuffer::k_default_usage);
             //if (!kSplitFinalMultiply) {
             //} else {
             {
@@ -224,7 +224,7 @@ bool load_weights(th::LlamaModel* m, WGPUDevice device, WGPUQueue queue, void* d
                         memcpy(&buffer1[r*newStride], &origData[r*origStride], newStride);
                     }
 
-                    m->loadedMapping[tname + "-split1"] = std::move(th::TensorBuffer(buffer1.data(), newShape, tensorType, false, device, queue));
+                    m->loadedMapping[tname + "-split1"] = th::TensorBuffer(buffer1.data(), newShape, tensorType, false, device, queue);
                 }
 
                 {
@@ -235,14 +235,14 @@ bool load_weights(th::LlamaModel* m, WGPUDevice device, WGPUQueue queue, void* d
                         memcpy(&buffer2[r*newStride], &origData[r*origStride + newStride], newStride);
                     }
 
-                    m->loadedMapping[tname + "-split2"] = std::move(th::TensorBuffer(buffer2.data(), newShape, tensorType, false, device, queue));
+                    m->loadedMapping[tname + "-split2"] = th::TensorBuffer(buffer2.data(), newShape, tensorType, false, device, queue);
                     //m->outputMatSplit2 = std::move(th::TensorBuffer(buffer2.data(), newShape, m->outputMat.type, true, device, queue));
                 }
 
                 printf("Finished...\n");
             }
         } else {
-            m->loadedMapping[tname] = std::move(th::TensorBuffer((const void*)(buffer.data() + offset), shape, tensorType, false, device, queue, th::TensorBuffer::k_default_usage));
+            m->loadedMapping[tname] = th::TensorBuffer((const void*)(buffer.data() + offset), shape, tensorType, false, device, queue, th::TensorBuffer::k_default_usage);
 
             // Our tensor is at 'offset' of tensorSizeBytes.
             if (m->loadedMapping[tname].get_size_bytes() != tensorSizeBytes) {
@@ -300,6 +300,7 @@ void load_model_chunk(th::LlamaModel* m, WGPUDevice device, WGPUQueue queue, voi
 
     int64_t originalFileOffset = readData<int64_t>(buffer,offset);
     int64_t padding = readData<int64_t>(buffer,offset);
+    (void)padding;
 
     char* payloadData = (char*)data;
     payloadData += offset;
@@ -432,8 +433,6 @@ void post_load_init_model(WGPUDevice device, WGPUQueue queue, std::shared_ptr<th
         m->layers.push_back(std::move(newLayer));
     }
 
-    LlamaLayer& l = m->layers[0];
-
     build_pipelines_llama(device, queue, m);
 }
 
@@ -496,7 +495,6 @@ std::shared_ptr<LlamaModel> load_llama_file(
         return {};
     }
 
-    std::streamsize size = fin.tellg();
     fin.seekg(0, std::ios::beg);
 
     // Most of the code below is copied from llama.cpp.
@@ -512,7 +510,7 @@ std::shared_ptr<LlamaModel> load_llama_file(
             return {};
         }
         if (magic != ggmlMagicValue) {
-            printf("%s: Bad magic\n");
+            printf("%s: Bad magic\n", __func__);
             return {};
         }
 
@@ -596,13 +594,10 @@ std::shared_ptr<LlamaModel> load_llama_file(
         }
 
         size_t tensorSizeBytes = nelements;
-        TensorType tensorType = TensorType_Unknown;
         if (ftype == kftype_f32) {
             tensorSizeBytes = tensorSizeBytes * 4;
-            tensorType = TensorType_F32;
         } else if (ftype == kftype_f16) {
             tensorSizeBytes = tensorSizeBytes * 2;
-            tensorType = TensorType_F16;
         } else if (ftype == kftype_q40 || ftype == kftype_q41) {
             printf("ERROR: Quantized formats not supported yet\n");
             tensorSizeBytes = tensorSizeBytes / 2;

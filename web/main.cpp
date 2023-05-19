@@ -96,7 +96,7 @@ EM_JS(void, updateMessageText, (const char* messageId, const char* str), {
     updateMessageText(jsMessageId, jsMessageStr);
 });
 
-static void on_new_token(std::string token, std::string message) {
+static void on_new_token(std::string /*token*/, std::string message) {
     updateMessageText(gLastBotId.c_str(), message.c_str());
 }
 

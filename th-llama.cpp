@@ -62,7 +62,7 @@ void build_final_compute_cmdbuf(
         LlamaFinalComputePipeline& p,
         int n_tokens);
 
-void build_pipelines_llama(WGPUDevice device, WGPUQueue queue, std::shared_ptr<LlamaModel> m) {
+void build_pipelines_llama(WGPUDevice device, WGPUQueue /*queue*/, std::shared_ptr<LlamaModel> m) {
     printf("Constructing compute pipelines.\n");
     LlamaLayer& l = m->layers[0];
     
@@ -168,19 +168,6 @@ void do_inference(WGPUDevice device, WGPUQueue queue, std::shared_ptr<LlamaModel
 
 void async_finalize_inference(std::shared_ptr<LlamaModel> m) {
     m->n_past += m->embd.size();
-
-    //if ((int) m->embd_inp.size() < m->n_consumed) {
-    //    m->embd.clear();
-    //    m->embd.push_back(m->lastGeneratedToken);
-    //}
-
-    for (auto id : m->embd) {
-        const char* str = tk_llama_token_to_str(m, id);
-        //m->generatedMessage += str;
-        //if (m->onNewToken) {
-        //    m->onNewToken(str, m->generatedMessage);
-        //}
-    }
 
     fflush(stdout);
 }
