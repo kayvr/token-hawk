@@ -591,8 +591,6 @@ tk_llama_token th_eval_gpu(
         wgpuQueueWriteBuffer(queue, m->dimsUniforms[4], 0, &uniforms, kLlamaUniformsSize);
     }
     
-    int64_t size = n_embd * N * sizeof(float);
-
     if (kUseGpuEmbeddingSelection) {
         WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
         
@@ -730,6 +728,8 @@ tk_llama_token sync_finish_compute(WGPUDevice device, WGPUQueue queue, std::shar
     wgpuBufferMapAsync(m->resultBuffer.gpu, WGPUMapMode_Read, 0, m->resultBuffer.get_size_bytes(), webgpu_map_trampoline, &callback);
 
 #if defined(__EMSCRIPTEN__)
+    (void)device;
+    (void)queue;
     printf("ERROR: Emscripten in synchronous path!\n");
     assert(false);
 #endif
