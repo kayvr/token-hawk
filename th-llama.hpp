@@ -183,6 +183,11 @@ struct LlamaNetworkUniforms {
     uint32_t n_tokens{};
     float padding02{};
     float padding03{};
+
+    // Pad to ensure kLlamaUniformsSize. We rely on the size of these
+    // uniform structures to be exactly kLlamaUniformsSize when performing
+    // gpu uploads.
+    uint32_t padding04[4];
 };
 static_assert(sizeof(LlamaNetworkUniforms) <= kLlamaUniformsSize, "Uniforms too large");
 

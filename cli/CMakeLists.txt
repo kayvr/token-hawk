@@ -5,6 +5,12 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# To run sanitizers uncomment the following.
+#set(CMAKE_C_COMPILER "/usr/bin/clang")
+#set(CMAKE_CXX_COMPILER "/usr/bin/clang++")
+#set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address,undefined")
+#set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=address,undefined")
+
 set(DAWN_ENABLE_D3D12 OFF)
 set(DAWN_ENABLE_METAL OFF)
 set(DAWN_ENABLE_DESKTOP_GL OFF)

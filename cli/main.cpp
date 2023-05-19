@@ -82,7 +82,7 @@ int main(int argc, char* argv[]) {
     };
 
     WGPUDeviceDescriptor deviceDesc{
-        .requiredFeaturesCount = requiredFeatures.size(),
+        .requiredFeaturesCount = (uint32_t)requiredFeatures.size(),
         .requiredFeatures = requiredFeatures.data(),
     };
     device = wgpuAdapterCreateDevice(adapter, &deviceDesc);
@@ -100,6 +100,7 @@ int main(int argc, char* argv[]) {
 
     printf("\n");
 
+
     return 0;
 }
 
@@ -112,6 +113,7 @@ static bool run_inference(WGPUDevice device, WGPUQueue queue, const th::ThLlamaP
     }
     th::do_inference(device, queue, model, params.prompt);
     model.reset();
+    return true;
 }
 
 static void printDeviceError(WGPUErrorType errorType, const char *message, void *) {
