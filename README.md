@@ -46,6 +46,9 @@ For simple and quick access, use the [online demo](https://ui.tokenhawk.chat/).
 
 ## How to load models into the WebUI?
 
+
+ℹ️ We'll likely be able to load models without splitting them up [soon](https://github.com/kayvr/token-hawk/issues/2). No more chunking. The file size limitations appear to be a [bug](https://bugs.chromium.org/p/chromium/issues/detail?id=1444281) in chrome.
+
 Due to file size limitations in Chrome, model files must be split into ~550 megabytes chunks. You can use the [web version](https://ui.tokenhawk.chat/) of TokenHawk to convert pre-existing models using Firefox. Click on the 'Convert Model (Firefox Only)' button and select your f16-7B GGML file to convert. It will prompt you to download 28 files. Please be patient.
 
 After converting the file, here's a video of how to load the chunks:
