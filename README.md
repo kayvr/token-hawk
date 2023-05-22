@@ -2,8 +2,6 @@
 
 Hand-written [LLaMA](https://arxiv.org/abs/2302.13971) inference using WebGPU. It's fast, and you can try it out [online](https://ui.tokenhawk.chat/).
 
-🔥 The way TokenHawk loads models will change [very soon](https://github.com/kayvr/token-hawk/issues/2). No more chunking. 🔥
-
 ⚠️  TokenHawk is under active development. Only llama 7B-f16 is supported.  ⚠️
 
 # Description
@@ -48,26 +46,11 @@ For simple and quick access, use the [online demo](https://ui.tokenhawk.chat/).
 
 ## How to load models into the WebUI?
 
+Now that chunking has been [removed](https://github.com/kayvr/token-hawk/issues/2), simply click on 'Load Model'. From there you will be directed to select a file to upload. Select a 7B-f16 GGML file to upload as that is currently the only format supported.
 
-ℹ️ We'll be able to load models without chunking [soon](https://github.com/kayvr/token-hawk/issues/2). 
+## How do I convert llama weights into a GGML file?
 
-Due to file size limitations in Chrome, model files must be split into ~550 megabytes chunks. You can use the [web version](https://ui.tokenhawk.chat/) of TokenHawk to convert pre-existing models using Firefox. Click on the 'Convert Model (Firefox Only)' button and select your f16-7B GGML file to convert. It will prompt you to download 28 files. Please be patient.
-
-After converting the file, here's a video of how to load the chunks:
-
-
-
-
-
-
-https://github.com/kayvr/token-hawk/assets/98552926/d73ea677-81a0-47e8-ad85-6f509a230736
-
-
-
-
-## How do I convert llama weights into GGML format?
-
-Download [llama.cpp](https://github.com/ggerganov/llama.cpp) and follow it's documentation and utilities to convert llama weights. More details to come.
+Download [llama.cpp](https://github.com/ggerganov/llama.cpp) and follow its documentation and utilities to convert llama weights. More details to come.
 
 # Performance
 

@@ -134,100 +134,16 @@ document.getElementById('load-model').addEventListener('click', function() {
 });
 
 document.getElementById('fileInput').addEventListener('change', async (e) => {
-    const progressBar = document.getElementById("progress-bar");
-    progressBar.style.display = "block";
-    progressBar.value = 0;
-
-    gFilesProcessed = 0;
-
-    Module._capi_model_begin_load()
-
     var files = e.target.files; // This is a FileList object
-    console.log("Files to process: " + files.length);
-    for(var i = 0; i < files.length; i++) {
-        progressBar.value = (i / files.length) * 100;
-        if (!await loadChunkedFile(files[i])) {
-            return;
-        }
-        gFilesProcessed++;
-    }
-    console.log("Files processed: " + gFilesProcessed);
-
-    if (Module._capi_model_end_load()) {
-        sendChatMessage(kSystemId, "Successfully loaded model.", null);
-    }
-
-    progressBar.style.display = "none";
-});
-
-document.getElementById('convert-model').addEventListener('click', function() {
-    const convertInput = document.getElementById('convert-model-input');
-    convertInput.click();
-});
-
-document.getElementById('convert-model-input').addEventListener('change', async (e) => {
-    //var files = e.target.files; // This is a FileList object
-    //for(var i = 0; i < files.length; i++) {
-    //    console.log(files[i]); // You can handle each file here
-    //}
-
-    const file = e.target.files[0];
-    if (file) {
-        convertGGMLFile(file, true);
-    }
+    await loadFile(files[0]);
 });
 
 function timeoutSleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function downloadGGMLChunk(filename, buffer, fileType, numElementsInFile, vocabSize, originalFileOffset) {
-    // TODO Await promise to download file.
 
-    let prependedBuffer = new ArrayBuffer(u16_s * 2 + u32_s*3 + u64_s*2);
-    let view = new DataView(prependedBuffer);
-    view.setUint16(0, th_magic, true);
-    view.setUint16(u16_s, th_version, true);
-    view.setUint32(u32_s*1, fileType, true);
-    view.setUint32(u32_s*2, numElementsInFile, true);
-    view.setUint32(u32_s*3, vocabSize, true);
-
-    // Offset of the original file in bytes. 
-    // Used for calculating the 32-byte alignment offset
-    view.setBigInt64(u32_s*4, BigInt(originalFileOffset), true);
-    view.setBigInt64(u32_s*6, BigInt(0), true); // padding
-
-    let blob = new Blob([prependedBuffer, buffer], {type: 'application/octet-stream'});
-    let url = URL.createObjectURL(blob);
-
-    let link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    
-    document.body.appendChild(link);
-    link.click();
-    
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-}
-
-async function loadChunkedFile(file, convert) {
-    const fileSize = file.size;
-
-    const fileData = await readData(file, 0, fileSize);
-
-    const dataPtr = Module._malloc(fileSize);
-    const dataView = new Uint8Array(fileData);
-    Module.HEAPU8.set(dataView, dataPtr);
-    Module._capi_load_model_chunk(dataPtr, fileSize);
-    Module._free(dataPtr);
-
-    return true;
-}
-
-
-async function convertGGMLFile(file, convert) {
-
+async function loadFile(file) {
     const progressBar = document.getElementById("progress-bar");
     progressBar.style.display = "block";
     progressBar.value = 0;
@@ -306,15 +222,17 @@ async function convertGGMLFile(file, convert) {
         cur += size + f32_s;
     }
     vocabEnd = cur
-    //console.log("Typical header size: " + cur);
     
-    let ggmlChunk = 0;
+    {
+        const size = vocabEnd;
+        const data = await readData(file, 0, size);
 
-    if (convert) {
-        const data = await readData(file, 0, vocabEnd);
-        await downloadGGMLChunk(file.name + "-chunk-" + ggmlChunk.toString().padStart(4, '0'), data, kFileType_Header, 0, vocabEnd - vocabBegin, originalFileOffset);
-        // TODO Await file selection box.
-        ++ggmlChunk;
+        const dataPtr = Module._malloc(size);
+        const dataView = new Uint8Array(data);
+        Module.HEAPU8.set(dataView, dataPtr);
+        Module._capi_load_model_header(dataPtr, size)
+        Module._free(dataPtr);
+
         originalFileOffset = cur;
     }
 
@@ -328,14 +246,11 @@ async function convertGGMLFile(file, convert) {
     const maxFileSize = 550000000; // Limit for chrome.
 
     // Unfortunately, we don't know how many tensors are coming.
-    // So we don't accurately gauge progress.
+    // So we can't accurately gauge progress.
     // We can detect 7B, 13B, etc... by the number of layers
     // that are specified in the hyper parameters.
     // So we hardcode 7B values (32) for now.
     totalSteps = 32 * 9;
-
-    lastWeightPtr = cur
-    lastChunkWrittenPtr = cur
 
     // Load each of the tensors into memory.
     currentLayerIndex = 0
@@ -403,50 +318,39 @@ async function convertGGMLFile(file, convert) {
 
             let uint8Array = new Uint8Array(restOfHeader);
             let weightName = decoder.decode(uint8Array.subarray(offset, offset + stringLen));
+            console.log("weightName: " + weightName);
 
             // Skip to next tensor (we will send data to C++).
             cur = Math.ceil(cur / 32) * 32;  // 32-byte alignment.
             cur += tensorSizeBytes;
 
-            if (cur - lastChunkWrittenPtr > maxFileSize) {
-                data = await readData(file, lastChunkWrittenPtr, lastWeightPtr - lastChunkWrittenPtr);
-                lastChunkWrittenPtr = lastWeightPtr
-                filename = file.name + "-chunk-" + ggmlChunk.toString().padStart(4, '0');
-                await downloadGGMLChunk(filename, data, kFileType_Weights, numWeightsSoFar, 0, originalFileOffset);
-                ++ggmlChunk;
+            {
+                size = cur - originalFileOffset;
+                data = await readData(file, originalFileOffset, size);
+
+                const dataPtr = Module._malloc(size);
+                const dataView = new Uint8Array(data);
+                Module.HEAPU8.set(dataView, dataPtr);
+
+                Module._capi_load_model_weights(dataPtr, originalFileOffset, size);
+                Module._free(dataPtr);
+
                 originalFileOffset = cur;
                 numWeightsSoFar = 0;
             }
 
             ++numWeightsSoFar;
-            
-            lastWeightPtr = cur
         }
     }
 
-    if (cur != lastChunkWrittenPtr) {
-        data = await readData(file, lastChunkWrittenPtr, cur - lastChunkWrittenPtr);
-        lastChunkWrittenPtr = lastWeightPtr
-        await downloadGGMLChunk(file.name + "-chunk-" + ggmlChunk.toString().padStart(4, '0'), data, kFileType_Weights, numWeightsSoFar, 0, originalFileOffset);
-        ++ggmlChunk;
-        originalFileOffset = cur;
+    if (Module._capi_model_end_load()) {
+        sendChatMessage(kSystemId, "Successfully loaded model.", null);
+    } else {
+        sendChatMessage(kSystemId, "Failed to load GGML file.", null);
     }
-
-    {
-        const u32_s = 4;
-        let data = new ArrayBuffer(u32_s);
-        let view = new DataView(data);
-        view.setUint32(u32_s*0, ggmlChunk + 1, true);
-
-        // Now write a footer containing the number of files that should have been written.
-        // This is to sanity check file loading.
-        await downloadGGMLChunk(file.name + "-chunk-" + ggmlChunk.toString().padStart(4, '0'), data, kFileType_Footer, ggmlChunk + 1, 0, originalFileOffset);
-        originalFileOffset = cur;
-    }
-
-    sendChatMessage(kSystemId, "Successfully chunked GGML file.", null);
 
     progressBar.style.display = "none";
+
 }
 
 function readData(file, start, size) {
@@ -479,4 +383,4 @@ Module.onRuntimeInitialized = async _ => {
     //}
 };
 
-sendChatMessage(kSystemId, "TokenHawk is in testing and only 7B-f16 llama models are supported.\nDue to file size limits in Chrome, use the 'Convert Model' button below in Firefox to split a 7B <i>lamma.cpp</i> GGML file into chunks. Then, in Chrome, you can load the resulting chunks using the 'Load Model' button ('Load Model' allows multiple file selection).\nMore details can be found <a href='https://github.com/kayvr/token-hawk'>here</a>.", null)
+sendChatMessage(kSystemId, "TokenHawk WebUI\nRequires Chrome Canary v115.0.5786.0 (or higher)\nMore details <a href='https://github.com/kayvr/token-hawk'>here</a>.", null)

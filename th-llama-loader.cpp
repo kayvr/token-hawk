@@ -165,7 +165,6 @@ bool load_weights(th::LlamaModel* m, WGPUDevice device, WGPUQueue queue, void* d
             readDataRaw(buffer, offset, tmp.data(), stringLen);
             tname.resize(stringLen);
             tname.assign(tmp.data(), stringLen);
-            //printf("New vocab tname: %s\n", tname.data());
         } else {
             tname.clear();
         }
@@ -255,12 +254,11 @@ bool load_weights(th::LlamaModel* m, WGPUDevice device, WGPUQueue queue, void* d
             }
         }
 
-
         offset += tensorSizeBytes;
     }
 
     if (offset != dataSize) {
-        printf("Unknown left-over data\n");
+        printf("Unknown left-over data %zu %lld\n", offset, dataSize);
     }
 
     return true;

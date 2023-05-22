@@ -72,15 +72,3 @@ body {
     background: #fff;  // adjust as needed
 }
 
-.bottom {
-    position: relative;
-    bottom: -100px;
-    width: 100%;
-    text-align: center;
-    padding: 20px 0;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    background: #fff;  // adjust as needed
-}
-

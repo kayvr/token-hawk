@@ -90,6 +90,19 @@ extern "C" void capi_load_model_chunk(void* data, int64_t dataSize) {
     load_model_chunk(gModel.get(), gDevice, gQueue, data, dataSize);
 }
 
+EMSCRIPTEN_KEEPALIVE
+extern "C" void capi_load_model_header(void* data, double dataSizeD) {
+    int64_t dataSize = (int64_t)dataSizeD;
+    load_header(gModel.get(), data, dataSize, 0);
+}
+
+EMSCRIPTEN_KEEPALIVE
+extern "C" void capi_load_model_weights(void* data, double weightsBeginOffsetD, double dataSizeD) {
+    int64_t weightsBeginOffset = (int64_t)weightsBeginOffsetD;
+    int64_t dataSize = (int64_t)dataSizeD;
+    load_weights(gModel.get(), gDevice, gQueue, data, dataSize, 1, weightsBeginOffset);
+}
+
 EM_JS(void, updateMessageText, (const char* messageId, const char* str), {
     var jsMessageStr = UTF8ToString(str);
     var jsMessageId = UTF8ToString(messageId);
