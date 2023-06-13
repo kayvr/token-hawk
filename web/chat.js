@@ -383,4 +383,4 @@ Module.onRuntimeInitialized = async _ => {
     //}
 };
 
-sendChatMessage(kSystemId, "TokenHawk WebUI\nRequires Chrome Canary v115.0.5786.0 (or higher)\nMore details <a href='https://github.com/kayvr/token-hawk'>here</a>.", null)
+sendChatMessage(kSystemId, "<a href='https://github.com/kayvr/token-hawk'>TokenHawk</a> WebUI</a>.", null)
