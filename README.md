@@ -19,9 +19,7 @@ TokenHawk also integrates well with other WebGPU apps, like this one:
 
 
 
-
-https://github.com/kayvr/token-hawk/assets/98552926/a7b26199-5c97-463a-a266-786db1f6ffd9
-
+https://github.com/kayvr/token-hawk/assets/98552926/57ef453d-5ec9-4d81-85a0-36ef0313a51b
 
 
 
@@ -37,6 +35,12 @@ Use the command line for performance tuning WebGPU code. Here's an example of us
 ```
 $ ./th -m models/llama-7B/ggml-model-f16.bin "<prompt goes here>"
 ```
+
+
+
+https://github.com/kayvr/token-hawk/assets/98552926/6ba95cbe-2c1f-41bb-a4fb-4e502c7ef440
+
+
 
 # Web UI
 
