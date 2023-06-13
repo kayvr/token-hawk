@@ -10,6 +10,10 @@
 #include "th-llama.hpp"
 #include "th-llama-loader.hpp"
 
+#ifdef WIN32
+#include <Windows.h>
+#include <cstdio>
+#endif
 
 static void printDeviceError(WGPUErrorType errorType, const char *message, void *);
 static void printDeviceLost(WGPUDeviceLostReason reason, char const *message, void *);
@@ -20,6 +24,13 @@ static void print_usage();
 static bool run_inference(WGPUDevice device, WGPUQueue queue, const th::ThLlamaParameters& params);
 
 int main(int argc, char* argv[]) {
+#ifdef WIN32
+    // Set console code page to UTF-8 so console known how to interpret string data
+    SetConsoleOutputCP(CP_UTF8);
+    // Enable buffering to prevent VS from chopping up UTF-8 byte sequences
+    setvbuf(stdout, nullptr, _IOFBF, 1000);
+#endif
+
     th::ThLlamaParameters params{};
     for (int i = 1; i < argc; i++)
     {
