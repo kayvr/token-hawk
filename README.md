@@ -1,6 +1,6 @@
 # TokenHawk
 
-Hand-written [LLaMA](https://arxiv.org/abs/2302.13971) inference using WebGPU. It's fast, and you can try it out [online](https://ui.tokenhawk.chat/).
+Hand-written [LLaMA](https://arxiv.org/abs/2302.13971) inference using WebGPU. It's fast, and you can try it out [online](https://ui.tokenhawk.chat/). It works on the Linux and Windows command line too (macOS to follow soon).
 
 ⚠️  TokenHawk is under active development. Only llama 7B-f16 is supported.  ⚠️
 
@@ -43,6 +43,12 @@ $ ./th -m models/llama-7B/ggml-model-f16.bin "<prompt goes here>"
 See the [Web directory](web/README.md) for build and usage instructions.
 
 For simple and quick access, use the [online demo](https://ui.tokenhawk.chat/).
+
+
+
+https://github.com/kayvr/token-hawk/assets/98552926/af32b968-c496-46cb-ba17-2a476492f133
+
+
 
 ## How to load models into the WebUI?
 
