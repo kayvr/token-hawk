@@ -46,7 +46,9 @@ For simple and quick access, use the [online demo](https://ui.tokenhawk.chat/).
 
 
 
-https://github.com/kayvr/token-hawk/assets/98552926/af32b968-c496-46cb-ba17-2a476492f133
+
+https://github.com/kayvr/token-hawk/assets/98552926/c718bc1d-2246-43de-9e8c-7efb5e5d7c49
+
 
 
 
