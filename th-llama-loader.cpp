@@ -444,7 +444,7 @@ std::shared_ptr<LlamaModel> load_llama_chunked(
         for (const auto& entry : dir_iter) {
             std::cout << entry.path() << std::endl;
 
-            std::string filename = entry.path();
+            std::string filename = entry.path().string();
 
             std::ifstream file(filename, std::ios::binary | std::ios::ate);
 

@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstring>
 #include <cinttypes>
+#include <numeric>
 
 namespace th {
 

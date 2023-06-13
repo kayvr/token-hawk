@@ -6,6 +6,8 @@
 #include <atomic>
 #include <cstring>
 #include <queue>
+#include <chrono>
+#include <thread>
 
 namespace th {
 
@@ -150,7 +152,7 @@ void do_inference(WGPUDevice device, WGPUQueue queue, std::shared_ptr<LlamaModel
 #if !defined(__EMSCRIPTEN__)
         while (m->n_past < kMaxOutputTokens) { // May want to make n_past atomic.
             wgpuDeviceTick(device);
-            usleep(10);
+            std::this_thread::sleep_for(std::chrono::microseconds(10));
         }
 #endif
     } else {
@@ -744,7 +746,7 @@ tk_llama_token sync_finish_compute(WGPUDevice device, WGPUQueue queue, std::shar
         if (!waitingForQueue.load()) {
             break;
         }
-        usleep(1);
+        std::this_thread::sleep_for(std::chrono::microseconds(1));
     }
 #endif
 
