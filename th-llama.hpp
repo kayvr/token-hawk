@@ -5,6 +5,7 @@
 #include "th.hpp"
 
 #include <stdint.h>
+#include <array>
 #include <string>
 #include <memory>
 #include <vector>
