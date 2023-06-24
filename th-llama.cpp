@@ -14,7 +14,6 @@ namespace th {
 static const int64_t kBatchTokenSize = 8;
 static const int64_t kAllowedSubsequentBatchSize = 1;
 static const bool kShowTiming = false;
-static const bool kSplitCompute = false;
 static const int64_t kMaxOutputTokens = 500;
 static const int64_t kMaxAsyncTokensPerMsg = 128;
 static const int kMaxContext = 512;
@@ -302,30 +301,9 @@ void build_layer_cmdbuf(
 
     if (encoder) { pass = wgpuCommandEncoderBeginComputePass(encoder, nullptr); };
     if (n_tokens == 1) {
-        if (kSplitCompute) {
-            m->splitScratch[0].shape = queryBuf.shape;
-            m->splitScratch[1].shape = keyBuf.shape;
-            m->splitScratch[2].shape = valueBuf.shape;
-            cmdbuf_vector_mat_mul_split_trans(
-                device, encoder, pass, &p.p03_mm,
-                 m->inp[0], l.wq, queryBuf, {&m->splitScratch[0]},
-                 0,
-                 m->splitBuffers, false);
-            cmdbuf_vector_mat_mul_split_trans(
-                device, encoder, pass, &p.p03_mm,
-                 m->inp[0], l.wk, keyBuf, {&m->splitScratch[1]},
-                 0,
-                 m->splitBuffers, false);
-            cmdbuf_vector_mat_mul_split_trans(
-                device, encoder, pass, &p.p03_mm,
-                 m->inp[0], l.wv, valueBuf, {&m->splitScratch[2]},
-                 0,
-                 m->splitBuffers, false);
-        } else {
-            cmdbuf_vector_mat_mul_trans( device, encoder, pass, &p.p03_mm, m->inp[0], l.wq, queryBuf, 0);
-            cmdbuf_vector_mat_mul_trans( device, encoder, pass, &p.p03_mm, m->inp[0], l.wk, keyBuf, 0);
-            cmdbuf_vector_mat_mul_trans( device, encoder, pass, &p.p03_mm, m->inp[0], l.wv, valueBuf, 0);
-        }
+        cmdbuf_vector_mat_mul_trans( device, encoder, pass, &p.p03_mm, m->inp[0], l.wq, queryBuf, 0);
+        cmdbuf_vector_mat_mul_trans( device, encoder, pass, &p.p03_mm, m->inp[0], l.wk, keyBuf, 0);
+        cmdbuf_vector_mat_mul_trans( device, encoder, pass, &p.p03_mm, m->inp[0], l.wv, valueBuf, 0);
     } else {
         cmdbuf_mat_mul(             device, encoder, pass, &p.p03_mm, m->inp[0], l.wq, queryBuf, 1);
         cmdbuf_mat_mul(             device, encoder, pass, &p.p03_mm, m->inp[0], l.wk, keyBuf, 1);
@@ -336,17 +314,6 @@ void build_layer_cmdbuf(
         wgpuComputePassEncoderRelease(pass); // There is a question whether we should release before building command buffer.
     }
     
-    //if (n_tokens == 1 && kSplitCompute) {
-    //    if (encoder) { pass = wgpuCommandEncoderBeginComputePass(encoder, nullptr); };
-    //    cmdbuf_vector_reduce( device, encoder, pass, &p.p03_mm_reduce, queryBuf, m->splitScratch[0], 2);
-    //    cmdbuf_vector_reduce( device, encoder, pass, &p.p03_mm_reduce, keyBuf, m->splitScratch[1], 2);
-    //    cmdbuf_vector_reduce( device, encoder, pass, &p.p03_mm_reduce, valueBuf, m->splitScratch[2], 2);
-    //    if (encoder) {
-    //        wgpuComputePassEncoderEnd(pass);
-    //        wgpuComputePassEncoderRelease(pass); // There is a question whether we should release before building command buffer.
-    //    }
-    //}
-
     queryBuf.shape = {.b=n_tokens, .r=n_head, .c=n_embd/n_head};
     keyBuf.shape = {.b=n_tokens, .r=n_head, .c=n_embd/n_head};
     valueBuf.shape = {.b=n_head, .r=n_tokens, .c=n_embd/n_head};
@@ -432,18 +399,7 @@ void build_layer_cmdbuf(
     valueBuf.shape = TensorShape{.l=0, .b=0, .r=n_tokens, .c=m->n_embd};
     m->inp[1].shape = TensorShape{.l=0, .b=0, .r=n_tokens, .c=m->n_embd};
     if (n_tokens == 1) {
-        if (kSplitCompute) {
-            m->splitScratch[0].shape = m->inp[1].shape;
-            cmdbuf_vector_mat_mul_split_trans(
-                device, encoder, nullptr, &p.p10_mm,
-                valueBuf, l.wo, m->inp[1],
-                {&m->splitScratch[0]},
-                0,
-                m->splitBuffers, false);
-            cmdbuf_vector_reduce( device, encoder, nullptr, &p.p10_mm_reduce, m->inp[1], m->splitScratch[0], 16);
-        } else {
-            cmdbuf_vector_mat_mul_trans(device, encoder, nullptr, &p.p10_mm, valueBuf, l.wo, m->inp[1], 0);
-        }
+        cmdbuf_vector_mat_mul_trans(device, encoder, nullptr, &p.p10_mm, valueBuf, l.wo, m->inp[1], 0);
     } else {
         cmdbuf_mat_mul(device, encoder, nullptr, &p.p10_mm, valueBuf, l.wo, m->inp[1], 1);
     }
