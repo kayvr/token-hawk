@@ -1,6 +1,6 @@
 # TokenHawk
 
-Hand-written [LLaMA](https://arxiv.org/abs/2302.13971) inference using WebGPU. It's fast, and you can try it out [online](https://ui.tokenhawk.chat/). It works on the Linux and Windows command line too (macOS to follow soon).
+Hand-written [LLaMA](https://arxiv.org/abs/2302.13971) inference using WebGPU. It's fast, and you can try it out [online](https://ui.tokenhawk.chat/). It also works on the Windows, macOS, or Linux command line.
 
 ⚠️  TokenHawk is under active development. Only llama 7B-f16 is supported.  ⚠️
 

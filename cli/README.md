@@ -2,7 +2,7 @@
 
 CLI interface to TokenHawk. Requires.
 
-# Build Instructions
+# Build Instructions (Linux/macOS)
 
 Ensure you're recursively cloned the repository and all it's submodules.
 
@@ -37,3 +37,7 @@ $ cd build
 $ cmake -DCMAKE_BUILD_TYPE=Release ..
 $ make -j8
 ```
+
+# Build Instructions for Windows
+
+Install Visual Studio 2022, and you can build TokenHawk on Windows with the same instructions as with Linux / macOS.
